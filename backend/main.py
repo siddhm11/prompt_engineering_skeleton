@@ -23,9 +23,12 @@ MONGO_URI = os.getenv("MONGO_URI")
 QDRANT_URL = os.getenv("QDRANT_URL", ":memory:")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
-# Basic check to ensure keys are present
+# Free embedding model: all-MiniLM-L6-v2 (384-dim, Apache 2.0). No API key required.
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Basic check to ensure keys are present (only warn at startup; fail on /enhance if missing)
 if not GROQ_API_KEY:
-    raise ValueError("❌ ERROR: GROQ_API_KEY is missing from .env file!")
+    print("⚠️ GROQ_API_KEY is missing from .env — /enhance will fail until you add it.")
 
 # --- 2. SETUP CLIENTS ---
 
@@ -41,15 +44,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# C. MongoDB (User Profiles & Logs)
+# C. MongoDB (User Profiles & Logs) — optional; use in-memory fallback if unavailable
+users_col = None
+prompts_col = None
+_in_memory_users = {}  # fallback when MongoDB is not running
+
 try:
-    mongo_client = MongoClient(MONGO_URI)
+    mongo_client = MongoClient(
+        MONGO_URI or "mongodb://localhost:27017",
+        serverSelectionTimeoutMS=3000,
+    )
+    mongo_client.admin.command("ping")
     db = mongo_client["prompt_engine_db"]
     users_col = db["users"]
     prompts_col = db["prompt_logs"]
     print("✅ MongoDB Connected")
 except Exception as e:
-    print(f"❌ MongoDB Connection Failed: {e}")
+    print(f"⚠️ MongoDB not available ({e}) — using in-memory fallback for profiles/logs.")
 
 # D. Qdrant (Vector Memory)
 qdrant = None
@@ -89,9 +100,10 @@ def init_qdrant():
             print(f"❌ Qdrant Connection Failed: {e}")
     return qdrant
 
-# E. AI Models
-print("Embedding model will be loaded lazily on first use")
+# E. AI Models — free local embeddings (MiniLM via sentence-transformers)
+print("Embedding: free model (MiniLM) will load on first use")
 EMBEDDING_MODEL = None
+_embedding_unavailable = False
 
 # Lazy-load Groq client to avoid initialization errors
 groq_client = None
@@ -121,17 +133,26 @@ class PromptRequest(BaseModel):
 # --- 4. HELPER FUNCTIONS ---
 
 def get_embedding(text: str):
-    """Converts text to vector. Lazily loads the embedding model on first call."""
-    global EMBEDDING_MODEL
+    """Converts text to 384-dim vector using free MiniLM model (sentence-transformers). Returns None if unavailable."""
+    global EMBEDDING_MODEL, _embedding_unavailable
+    if _embedding_unavailable:
+        return None
     if EMBEDDING_MODEL is None:
         try:
             from sentence_transformers import SentenceTransformer
-            print("⏳ Loading Embedding Model...")
-            EMBEDDING_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
-            print("✅ Embedding Model Loaded")
+            print("⏳ Loading free embedding model (all-MiniLM-L6-v2)...")
+            # Prefer ONNX backend (lighter, CPU-friendly); fallback to default
+            try:
+                EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME, backend="onnx")
+                print("✅ Embedding model loaded (ONNX backend)")
+            except Exception:
+                EMBEDDING_MODEL = SentenceTransformer(EMBEDDING_MODEL_NAME)
+                print("✅ Embedding model loaded (default backend)")
         except Exception as e:
-            raise RuntimeError(f"Failed to load embedding model: {e}")
-    return EMBEDDING_MODEL.encode(text).tolist()
+            _embedding_unavailable = True
+            print(f"⚠️ Embedding unavailable: {e} — install: pip install sentence-transformers (or sentence-transformers[onnx] for CPU)")
+            return None
+    return EMBEDDING_MODEL.encode(text, convert_to_numpy=True).tolist()
 
 def retrieve_context(user_id: str, query_text: str, limit: int = 3):
     """Finds similar past prompts."""
@@ -140,9 +161,11 @@ def retrieve_context(user_id: str, query_text: str, limit: int = 3):
     
     if qdrant is None:
         return "No relevant past context found."
-    
+
     query_vector = get_embedding(query_text)
-    
+    if query_vector is None:
+        return "No relevant past context found."
+
     # Use search method compatible with qdrant-client v1.16.2
     results = qdrant.search(
         collection_name=COLLECTION_NAME,
@@ -170,11 +193,14 @@ def health_check():
 @app.post("/users/register")
 def register_user(profile: UserProfile):
     """Creates or updates a user profile."""
-    users_col.update_one(
-        {"user_id": profile.user_id}, 
-        {"$set": profile.dict()}, 
-        upsert=True
-    )
+    if users_col is not None:
+        users_col.update_one(
+            {"user_id": profile.user_id},
+            {"$set": profile.dict()},
+            upsert=True,
+        )
+    else:
+        _in_memory_users[profile.user_id] = profile.dict()
     return {"message": f"User {profile.user_id} registered successfully."}
 
 @app.post("/enhance")
@@ -184,9 +210,16 @@ def enhance_prompt(request: PromptRequest):
     
     print(f"📥 Received prompt from {request.user_id}: {request.prompt[:50]}...")
 
-    # 1. Fetch User Profile (MongoDB)
-    user_data = users_col.find_one({"user_id": request.user_id})
-    
+    # 1. Fetch User Profile (MongoDB or in-memory fallback)
+    user_data = None
+    if users_col is not None:
+        try:
+            user_data = users_col.find_one({"user_id": request.user_id})
+        except Exception as e:
+            print(f"⚠️ MongoDB read failed: {e}")
+    if user_data is None:
+        user_data = _in_memory_users.get(request.user_id)
+
     # Default fallback if user not found
     if not user_data:
         tech_stack = "General Programming"
@@ -227,16 +260,16 @@ def enhance_prompt(request: PromptRequest):
         "Your goal is to transform the user's raw input into a high-precision LLM prompt, "
         "but ONLY when necessary to improve performance.\n\n"
         "### DECISION LOGIC:\n"
-        "1. **PASS-THROUGH (Low Complexity):** If the input is conversational (e.g., 'Hi', 'Thanks') "
+        "1. PASS-THROUGH (Low Complexity): If the input is conversational (e.g., 'Hi', 'Thanks') "
         "or a simple fact lookup (e.g., 'Capital of France?'), return it AS-IS. Do not over-engineer.\n"
-        "2. **ENGINEER (High Complexity):** If the input is a request for Code, Content Creation, "
+        "2. ENGINEER (High Complexity): If the input is a request for Code, Content Creation, "
         "Complex Reasoning, or Analysis, rewrite it using the **CO-STAR Framework**:\n"
-        "   - **C**ontext: Define the role and situation.\n"
-        "   - **O**bjective: Clear, actionable goal.\n"
-        "   - **S**tyle: Specific coding style or writing voice (use Global Profile if relevant).\n"
-        "   - **T**one: The attitude of the response.\n"
-        "   - **A**udience: Who is this for?\n"
-        "   - **R**esponse: Format (JSON, Markdown, Code Block).\n\n"
+        "   - Context: Define the role and situation.\n"
+        "   - Objective: Clear, actionable goal.\n"
+        "   - Style: Specific coding style or writing voice (use Global Profile if relevant).\n"
+        "   - Tone: The attitude of the response.\n"
+        "   - Audience: Who is this for?\n"
+        "   - Response: Format (JSON, Markdown, Code Block).\n\n"
         "### CRITICAL RULES:\n"
         "- **Context Injection:** If past history is relevant, weave it into the 'Context' section.\n"
         "- **No Hallucinations:** Do not invent facts not present in the input or memory.\n"
@@ -276,7 +309,7 @@ def enhance_prompt(request: PromptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Groq API Error: {str(e)}")
     
-    # 5. Save Logs (MongoDB)
+    # 5. Save Logs (MongoDB if available)
     log_entry = {
         "user_id": request.user_id,
         "timestamp": datetime.now(),
@@ -284,29 +317,36 @@ def enhance_prompt(request: PromptRequest):
         "original_input": request.prompt,
         "enhanced_output": enhanced_prompt,
         "context_used": past_context,
-        "latency_sec": round(time.time() - start_time, 2)
+        "latency_sec": round(time.time() - start_time, 2),
     }
-    prompts_col.insert_one(log_entry)
-    
-    # 6. Update Memory (Qdrant)
-    # We save the interaction so the system learns for next time
+    log_id = "memory"
+    if prompts_col is not None:
+        try:
+            result = prompts_col.insert_one(log_entry)
+            log_id = str(result.inserted_id)
+        except Exception as e:
+            print(f"⚠️ MongoDB log write failed: {e}")
+
+    # 6. Update Memory (Qdrant) — only if embeddings are available
     try:
-        q_client = init_qdrant()
-        if q_client:
-            q_client.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[
-                    PointStruct(
-                        id=int(time.time()), 
-                        vector=get_embedding(request.prompt),
-                        payload={
-                            "user_id": request.user_id,
-                            "original_prompt": request.prompt,
-                            "refined_prompt": enhanced_prompt
-                        }
-                    )
-                ]
-            )
+        vec = get_embedding(request.prompt)
+        if vec is not None:
+            q_client = init_qdrant()
+            if q_client:
+                q_client.upsert(
+                    collection_name=COLLECTION_NAME,
+                    points=[
+                        PointStruct(
+                            id=int(time.time()),
+                            vector=vec,
+                            payload={
+                                "user_id": request.user_id,
+                                "original_prompt": request.prompt,
+                                "refined_prompt": enhanced_prompt
+                            }
+                        )
+                    ]
+                )
     except Exception as e:
         print(f"⚠️ Warning: Failed to save to Qdrant: {e}")
 
@@ -314,7 +354,7 @@ def enhance_prompt(request: PromptRequest):
     return {
         "original": request.prompt,
         "enhanced": enhanced_prompt,
-        "log_id": str(log_entry.get("_id"))
+        "log_id": log_id,
     }
 
 # Run with: uvicorn main:app --reload

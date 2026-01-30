@@ -16,14 +16,14 @@ python-dotenv==1.0.1
 # Vector DB
 qdrant-client==1.7.3
 
-# ML stack (LOCKED)
-sentence-transformers==2.2.2
-huggingface_hub==0.14.1
-torch==2.0.1
+# Free embeddings (MiniLM) — use [onnx] for CPU-only / lighter install
+sentence-transformers[onnx]>=3.0.0
 
 # APIs
-groq==0.3.0
+groq>=0.4.0
 httpx==0.24.1
 
 # DB
 pymongo==4.6.1
+
+numpy<2
