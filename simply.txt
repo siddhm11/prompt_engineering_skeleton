@@ -1,0 +1,6 @@
+go to extension, and do this
+npx localtunnel --port 8000
+then paste url in =to content.js
+
+for backend
+uvicorn main:app --reload

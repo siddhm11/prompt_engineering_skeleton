@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Prompt Memory",
+  "version": "1.0",
+  "permissions": ["activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://gemini.google.com/*", "https://claude.ai/*", "https://www.perplexity.ai/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ]
+}
