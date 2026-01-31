@@ -93,15 +93,15 @@ Chrome extensions require HTTPS. Use `localtunnel` to expose your local server.
 ---
 
 ## 📂 Project Structure
-prompt-enhancer-extension/ 
-├── backend/ 
-│ ├── main.py # FastAPI application & logic 
-│ └── requirements.txt # Python dependencies 
-├── extension/ 
-│ ├── content.js # Script injected into AI pages 
-│ ├── styles.css # Styling for the Memory button 
-│ └── manifest.json # Chrome extension configuration 
-└── README.md # Project documentation
+## prompt-enhancer-extension/ 
+##├── backend/ 
+##│ ├── main.py # FastAPI application & logic 
+##│ └── requirements.txt # Python dependencies 
+##├── extension/ 
+##│ ├── content.js # Script injected into AI pages 
+##│ ├── styles.css # Styling for the Memory button 
+##│ └── manifest.json # Chrome extension configuration 
+##└── README.md # Project documentation
 
 ---
 
