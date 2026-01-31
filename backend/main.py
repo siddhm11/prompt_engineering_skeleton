@@ -399,5 +399,131 @@ def enhance_prompt(request: PromptRequest):
         "log_id": log_id,
     }
 
+
+SOTA_SYSTEM_PROMPT = """
+You are a Principal Prompt Architect. Your goal is not to "fix" the user's prompt, but to translate their raw intent into a "SOTA" executable specification for an LLM.
+
+### THE PHILOSOPHY (The 7 Rules)
+1. **Clarity**: Eliminate ambiguity.
+2. **Context**: Inject User Tech Stack [{tech_stack}] & Preferences [{preferences}].
+3. **Tasks**: Break complex goals into a step-by-step "Chain of Thought".
+4. **Format**: Explicitly define the output format (JSON, Markdown, etc.).
+5. **Examples**: Request few-shot examples if abstract.
+6. **Role**: Assign a HYPER-SPECIFIC persona (e.g., "Senior Geo-Spatial Data Engineer").
+7. **Constraints**: Define Negative Constraints (what NOT to do).
+
+### YOUR PROTOCOL
+1. **Analyze**: Identify the user's core intent.
+2. **Architect**: Construct a prompt using the **CO-STAR+** framework:
+   - [ROLE]: Act as {Specific Expert Role}...
+   - [CONTEXT]: User context is {tech_stack}...
+   - [TASK]: Your specific objective is...
+   - [STRATEGY]: Before writing code, outline your step-by-step reasoning...
+   - [CONSTRAINTS]: Do NOT use...
+   - [OUTPUT]: Provide the answer in {Specific Format}...
+
+### INSTRUCTIONS
+- Return ONLY the final refined prompt.
+- Do NOT provide explanations.
+- If the prompt is a question TO YOU (like "what is this?"), answer it as a helper.
+"""
+
+@app.post("/enhance")
+def enhance_prompt(request: PromptRequest):
+    start_time = time.time()
     
+    # 1. GET USER CONTEXT (MongoDB Priority)
+    user_data = None
+    if users_col is not None:
+        user_data = users_col.find_one({"user_id": request.user_id})
+    if user_data is None:
+        user_data = _in_memory_users.get(request.user_id, {})
+
+    # Defaults
+    ts_raw = user_data.get("tech_stack", ["General Python", "Data Science"])
+    tech_stack = ", ".join(ts_raw) if isinstance(ts_raw, list) else str(ts_raw)
+    preferences = user_data.get("preferences", "Clean, modular code with docstrings.")
+    
+    # 2. RETRIEVE MEMORY
+    past_context, max_similarity = retrieve_context(request.user_id, request.prompt)
+
+    # 3. CONSTRUCT SOTA PROMPT
+    formatted_system = SOTA_SYSTEM_PROMPT.format(
+        tech_stack=tech_stack,
+        preferences=preferences
+    )
+
+    user_message = f"""
+    ### 1. MEMORY & PAST STRATEGIES
+    {past_context}
+
+    ### 2. RAW USER INPUT
+    "{request.prompt}"
+
+    ### 3. TASK
+    Apply the 7 Rules. Transform the raw input into a SOTA prompt.
+    Ensure you define a specific EXPERT ROLE and Negative Constraints.
+    """
+
+    enhanced_prompt = request.prompt # Fallback
+    try:
+        client = get_groq_client()
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": formatted_system},
+                {"role": "user", "content": user_message}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3, # Low temp for precision
+        )
+        enhanced_prompt = chat_completion.choices[0].message.content
+    except Exception as e:
+        print(f"❌ Groq API Error: {e}")
+
+    # 4. LOGGING (MongoDB)
+    log_id = "memory-only"
+    if prompts_col is not None:
+        try:
+            log_entry = {
+                "user_id": request.user_id,
+                "timestamp": datetime.now(),
+                "original": request.prompt,
+                "enhanced": enhanced_prompt,
+                "score": max_similarity,
+                "latency": round(time.time() - start_time, 2)
+            }
+            res = prompts_col.insert_one(log_entry)
+            log_id = str(res.inserted_id)
+        except: pass
+
+    # 5. MEMORY STORAGE (Qdrant)
+    # Only save if unique (similarity < 0.90)
+    if max_similarity < 0.90:
+        try:
+            vec = get_embedding(request.prompt)
+            if vec:
+                q_client = init_qdrant()
+                if q_client:
+                    q_client.upsert(
+                        collection_name=COLLECTION_NAME,
+                        points=[PointStruct(
+                            id=int(time.time()),
+                            vector=vec,
+                            payload={"user_id": request.user_id, "original_prompt": request.prompt, "refined_prompt": enhanced_prompt}
+                        )]
+                    )
+                    print("💾 New strategy memorized.")
+        except: pass
+    else:
+        print(f"♻️ Redundancy detected (Score {max_similarity:.2f}). Skipping save.")
+
+    return {
+        "original": request.prompt,
+        "enhanced": enhanced_prompt,
+        "log_id": log_id
+    }
+
 # Run with: uvicorn main:app --reload
+
+## change content.js as well 
+
