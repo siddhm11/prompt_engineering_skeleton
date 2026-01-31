@@ -8,8 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Distance, VectorParams
-# Lazy import: from sentence_transformers import SentenceTransformer
+from qdrant_client.models import PointStruct, Distance, VectorParams, Filter, FieldCondition, MatchValue# Lazy import: from sentence_transformers import SentenceTransformer
 from groq import Groq
 from pymongo import MongoClient
 from dotenv import load_dotenv
@@ -72,29 +71,45 @@ def init_qdrant():
     if qdrant is None:
         try:
             qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-            # Try to check if collection exists, with fallback for version compatibility
+            
+            # 1. Check if collection exists
             try:
                 collection_exists = qdrant.collection_exists(COLLECTION_NAME)
             except (AttributeError, Exception):
-                # Fallback: try to get_collection, if it fails, collection doesn't exist
                 try:
                     qdrant.get_collection(COLLECTION_NAME)
                     collection_exists = True
                 except:
                     collection_exists = False
             
+            # 2. Create collection if it doesn't exist
             if not collection_exists:
                 try:
                     qdrant.create_collection(
                         collection_name=COLLECTION_NAME,
                         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                     )
+                    print(f"✅ Created new Qdrant collection: '{COLLECTION_NAME}'")
                 except Exception as e:
-                    # Handle 409 Conflict: collection already exists
                     if "409" in str(e) or "already exists" in str(e):
-                        print(f"✅ Qdrant Collection '{COLLECTION_NAME}' already exists")
+                        pass
                     else:
                         raise
+
+            # --- THE FIX: CREATE PAYLOAD INDEX FOR USER_ID ---
+            # This tells Qdrant: "Please optimize searches for 'user_id'"
+            try:
+                qdrant.create_payload_index(
+                    collection_name=COLLECTION_NAME,
+                    field_name="user_id",
+                    field_schema="keyword"  # 'keyword' is best for exact string matches like IDs
+                )
+                print("✅ Payload index for 'user_id' ensured.")
+            except Exception as e:
+                # If index already exists, Qdrant might return an error or ignore it. 
+                # We catch it just in case, but usually it's safe.
+                print(f"ℹ️ Note on Indexing: {e}")
+
             print(f"✅ Qdrant Connected ({QDRANT_URL})")
         except Exception as e:
             print(f"❌ Qdrant Connection Failed: {e}")
@@ -155,34 +170,57 @@ def get_embedding(text: str):
     return EMBEDDING_MODEL.encode(text, convert_to_numpy=True).tolist()
 
 def retrieve_context(user_id: str, query_text: str, limit: int = 3):
-    """Finds similar past prompts."""
+    """
+    Finds similar past prompts and returns both the text context AND the highest similarity score.
+    Returns: (context_str, max_score)
+    """
     global qdrant
-    qdrant = init_qdrant()  # Ensure Qdrant is initialized
+    qdrant = init_qdrant()
     
+    # Default return values if DB is down or empty
     if qdrant is None:
-        return "No relevant past context found."
+        return "No relevant past context found.", 0.0
 
     query_vector = get_embedding(query_text)
     if query_vector is None:
-        return "No relevant past context found."
+        return "No relevant past context found.", 0.0
 
-    # Use search method compatible with qdrant-client v1.16.2
+    # Search with User ID Filter
     results = qdrant.search(
         collection_name=COLLECTION_NAME,
         query_vector=query_vector,
+        query_filter=Filter(
+            must=[
+                FieldCondition(
+                    key="user_id",
+                    match=MatchValue(value=user_id)
+                )
+            ]
+        ),
         limit=limit
     )
     
+    print(f"\n🔍 Searching Memory for User '{user_id}'...")
+    
     context_str = ""
+    max_score = 0.0  # Track the highest score found
+    
     for hit in results:
-        if hit.score > 0.25:  # Relevance threshold
-            payload = hit.payload
-            # Only use context if it matches the user (simple filter)
-            if payload.get("user_id") == user_id:
-                context_str += f"- Past Prompt: \"{payload.get('original_prompt')}\"\n"
-                context_str += f"- Refined Version: \"{payload.get('refined_prompt')}\"\n\n"
+        # Update max_score if this hit is higher
+        if hit.score > max_score:
+            max_score = hit.score
+
+        payload = hit.payload
+        print(f"   Found candidate (Score: {hit.score:.4f}): {payload.get('original_prompt')}")
+        
+        # Only add to string if it passes the "relevance" threshold (0.25)
+        if hit.score > 0.25:
+            context_str += f"- Past Prompt: \"{payload.get('original_prompt')}\"\n"
+            context_str += f"- Refined Version: \"{payload.get('refined_prompt')}\"\n\n"
             
-    return context_str if context_str else "No relevant past context found."
+    final_context = context_str if context_str else "No relevant past context found."
+    
+    return final_context, max_score
 
 # --- 5. API ENDPOINTS ---
 
@@ -205,93 +243,85 @@ def register_user(profile: UserProfile):
 
 @app.post("/enhance")
 def enhance_prompt(request: PromptRequest):
-    """The main logic: Retrieve -> Refine -> Store"""
+    """
+    The Master Logic: 
+    1. Identify User (MongoDB)
+    2. Retrieve Context & Similarity Score (Qdrant)
+    3. Engineer Prompt (Groq + CO-STAR)
+    4. Log Interaction (MongoDB)
+    5. Learn/Memorize (Qdrant - conditionally)
+    """
     start_time = time.time()
     
     print(f"📥 Received prompt from {request.user_id}: {request.prompt[:50]}...")
 
-    # 1. Fetch User Profile (MongoDB or in-memory fallback)
+    # --- PHASE 1: IDENTIFY USER & PREFERENCES ---
+    # We fetch the user's specific tech stack (e.g., "Python, React") to tailor the output.
     user_data = None
     if users_col is not None:
         try:
             user_data = users_col.find_one({"user_id": request.user_id})
         except Exception as e:
             print(f"⚠️ MongoDB read failed: {e}")
+    
+    # Fallback to in-memory if MongoDB failed or is empty
     if user_data is None:
         user_data = _in_memory_users.get(request.user_id)
 
-    # Default fallback if user not found
+    # Set defaults if user is brand new
     if not user_data:
         tech_stack = "General Programming"
-        preferences = "Standard best practices"
+        preferences = "Follow industry best practices."
     else:
-        tech_stack = ", ".join(user_data.get("tech_stack", []))
-        preferences = user_data.get("preferences", "")
+        # specific handling to ensure list conversion works
+        ts = user_data.get("tech_stack", [])
+        if isinstance(ts, list):
+            tech_stack = ", ".join(ts)
+        else:
+            tech_stack = str(ts)
+        preferences = user_data.get("preferences", "Standard best practices")
 
-    # 2. Retrieve Context (Qdrant)
-    past_context = retrieve_context(request.user_id, request.prompt)
 
-    # # 3. Construct System Prompt
-    # system_prompt = f"""
-    # You are an expert Technical Prompt Engineer.
-    # USER PROFILE: {tech_stack}
-    # PREFERENCES: {preferences}
-    
-    # PAST CONTEXT (Learn from this style):
-    # {past_context}
-    
-    # TASK: Convert the VAGUE INPUT into a detailed, professional technical prompt.
-    # RETURN ONLY THE REFINED PROMPT TEXT. NO EXPLANATIONS.
-    # """
-    
-    # system_message = (
-    #     "You are an expert Prompt Engineer. Refine the user's prompt to be precise and actionable.\n"
-    #     "RULES:\n"
-    #     "1. USER INPUT IS KING: If input contradicts memory, ignore memory.\n"
-    #     "2. USE GLOBAL PROFILE: Apply coding style preferences.\n"
-    #     "3. NO HALLUCINATIONS: Do not invent constraints.\n"
-    #     "4. OUTPUT: Return ONLY the refined prompt text."
-    # )
+    # --- PHASE 2: RETRIEVE CONTEXT (SINGLE PASS) ---
+    # We retrieve BOTH the text history AND the max similarity score.
+    # This score determines if we need to save this prompt later.
+    past_context, max_similarity = retrieve_context(request.user_id, request.prompt)
 
-    # --- UPGRADED SYSTEM MESSAGE ---
-    # This prompt forces the model to choose: "Pass-through" vs. "Engineer"
+
+    # --- PHASE 3: CONSTRUCT THE AI SYSTEM PROMPT ---
+    # This uses the CO-STAR framework to force the AI to be "Elite".
     system_message = (
         "You are an elite Prompt Engineer and Intent Optimizer.\n"
-        "Your goal is to transform the user's raw input into a high-precision LLM prompt, "
-        "but ONLY when necessary to improve performance.\n\n"
+        "Your goal is to transform the user's raw input into a high-precision LLM prompt.\n\n"
         "### DECISION LOGIC:\n"
-        "1. PASS-THROUGH (Low Complexity): If the input is conversational (e.g., 'Hi', 'Thanks') "
-        "or a simple fact lookup (e.g., 'Capital of France?'), return it AS-IS. Do not over-engineer.\n"
-        "2. ENGINEER (High Complexity): If the input is a request for Code, Content Creation, "
-        "Complex Reasoning, or Analysis, rewrite it using the **CO-STAR Framework**:\n"
-        "   - Context: Define the role and situation.\n"
+        "1. PASS-THROUGH: If input is conversational ('Hi', 'Thanks'), return AS-IS.\n"
+        "2. ENGINEER: If input is a request for Code or Reasoning, rewrite it using the **CO-STAR Framework**:\n"
+        "   - Context: Define the role (User Profile: " + tech_stack + ").\n"
         "   - Objective: Clear, actionable goal.\n"
-        "   - Style: Specific coding style or writing voice (use Global Profile if relevant).\n"
-        "   - Tone: The attitude of the response.\n"
-        "   - Audience: Who is this for?\n"
-        "   - Response: Format (JSON, Markdown, Code Block).\n\n"
+        "   - Style: " + preferences + ".\n"
+        "   - Tone: Professional & Technical.\n"
+        "   - Audience: Expert LLM.\n"
+        "   - Response: Format (e.g., Code Block, Markdown).\n\n"
         "### CRITICAL RULES:\n"
-        "- **Context Injection:** If past history is relevant, weave it into the 'Context' section.\n"
-        "- **No Hallucinations:** Do not invent facts not present in the input or memory.\n"
-        "- **Output:** Return ONLY the final prompt text. No explanations."
+        "- **Context Injection:** Use the provided SESSION MEMORY to maintain continuity.\n"
+        "- **No Hallucinations:** Do not invent facts.\n"
+        "- **Output:** Return ONLY the final refined prompt text. No explanations."
     )
     
-    # --- UPGRADED USER MESSAGE ---
-    # Presents the data clearly and forces the "Optimization" task
     user_message = f"""
-    ### 1. USER GLOBAL PREFERENCES
-
-    ### 2. SESSION CONTEXT (Memory)
+    ### 1. SESSION MEMORY (Context from previous turns)
     {past_context}
 
-    ### 3. RAW USER INPUT
+    ### 2. RAW USER INPUT
     "{request.prompt}"
 
     ### TASK:
-    Evaluate the "Raw User Input". If it requires engineering, rewrite it using CO-STAR. If it is simple, output it unchanged.
+    Rewrite the "Raw User Input" into a superior prompt using the System Guidelines.
     """
-    
-    # 4. Call Groq AI
+
+
+    # --- PHASE 4: GENERATE (Groq AI) ---
+    enhanced_prompt = request.prompt # Fallback to original
     try:
         client = get_groq_client()
         if client is None:
@@ -307,54 +337,67 @@ def enhance_prompt(request: PromptRequest):
         )
         enhanced_prompt = chat_completion.choices[0].message.content
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Groq API Error: {str(e)}")
-    
-    # 5. Save Logs (MongoDB if available)
-    log_entry = {
-        "user_id": request.user_id,
-        "timestamp": datetime.now(),
-        "platform": request.platform,
-        "original_input": request.prompt,
-        "enhanced_output": enhanced_prompt,
-        "context_used": past_context,
-        "latency_sec": round(time.time() - start_time, 2),
-    }
-    log_id = "memory"
+        print(f"❌ Groq API Error: {e}")
+        # We continue even if AI fails, returning the original prompt so the user isn't blocked.
+
+
+    # --- PHASE 5: LOGGING (MongoDB) ---
+    # We always log the attempt for analytics/debugging
+    log_id = "memory-only"
     if prompts_col is not None:
         try:
+            log_entry = {
+                "user_id": request.user_id,
+                "timestamp": datetime.now(),
+                "platform": request.platform,
+                "original_input": request.prompt,
+                "enhanced_output": enhanced_prompt,
+                "context_used": past_context,
+                "similarity_score": max_similarity, # Useful to debug
+                "latency_sec": round(time.time() - start_time, 2),
+            }
             result = prompts_col.insert_one(log_entry)
             log_id = str(result.inserted_id)
         except Exception as e:
             print(f"⚠️ MongoDB log write failed: {e}")
 
-    # 6. Update Memory (Qdrant) — only if embeddings are available
+
+    # --- PHASE 6: SMART MEMORY STORAGE (Qdrant) ---
+    # We only save if the prompt is unique (redundancy check).
     try:
-        vec = get_embedding(request.prompt)
-        if vec is not None:
-            q_client = init_qdrant()
-            if q_client:
-                q_client.upsert(
-                    collection_name=COLLECTION_NAME,
-                    points=[
-                        PointStruct(
-                            id=int(time.time()),
-                            vector=vec,
-                            payload={
-                                "user_id": request.user_id,
-                                "original_prompt": request.prompt,
-                                "refined_prompt": enhanced_prompt
-                            }
-                        )
-                    ]
-                )
+        # THRESHOLD CHECK: 
+        # If the prompt is >87% similar to an existing one, we assume it's a duplicate/retry.
+        if max_similarity > 0.87:
+            print(f"♻️ Redundancy Detected (Score: {max_similarity:.4f}). Skipping save.")
+        else:
+            vec = get_embedding(request.prompt)
+            if vec is not None:
+                q_client = init_qdrant()
+                if q_client:
+                    q_client.upsert(
+                        collection_name=COLLECTION_NAME,
+                        points=[
+                            PointStruct(
+                                id=int(time.time()), # Simple timestamp ID
+                                vector=vec,
+                                payload={
+                                    "user_id": request.user_id,
+                                    "original_prompt": request.prompt,
+                                    "refined_prompt": enhanced_prompt
+                                }
+                            )
+                        ]
+                    )
+                    print(f"💾 Memory Saved (New unique prompt).")
     except Exception as e:
         print(f"⚠️ Warning: Failed to save to Qdrant: {e}")
 
-    # 7. Return to Frontend
+    # --- RETURN ---
     return {
         "original": request.prompt,
         "enhanced": enhanced_prompt,
         "log_id": log_id,
     }
 
+    
 # Run with: uvicorn main:app --reload
