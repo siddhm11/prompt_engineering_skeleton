@@ -241,164 +241,6 @@ def register_user(profile: UserProfile):
         _in_memory_users[profile.user_id] = profile.dict()
     return {"message": f"User {profile.user_id} registered successfully."}
 
-@app.post("/enhance")
-def enhance_prompt(request: PromptRequest):
-    """
-    The Master Logic: 
-    1. Identify User (MongoDB)
-    2. Retrieve Context & Similarity Score (Qdrant)
-    3. Engineer Prompt (Groq + CO-STAR)
-    4. Log Interaction (MongoDB)
-    5. Learn/Memorize (Qdrant - conditionally)
-    """
-    start_time = time.time()
-    
-    print(f"📥 Received prompt from {request.user_id}: {request.prompt[:50]}...")
-
-    # --- PHASE 1: IDENTIFY USER & PREFERENCES ---
-    # We fetch the user's specific tech stack (e.g., "Python, React") to tailor the output.
-    user_data = None
-    if users_col is not None:
-        try:
-            user_data = users_col.find_one({"user_id": request.user_id})
-        except Exception as e:
-            print(f"⚠️ MongoDB read failed: {e}")
-    
-    # Fallback to in-memory if MongoDB failed or is empty
-    if user_data is None:
-        user_data = _in_memory_users.get(request.user_id)
-
-    # Set defaults if user is brand new
-    if not user_data:
-        tech_stack = "General Programming"
-        preferences = "Follow industry best practices."
-    else:
-        # specific handling to ensure list conversion works
-        ts = user_data.get("tech_stack", [])
-        if isinstance(ts, list):
-            tech_stack = ", ".join(ts)
-        else:
-            tech_stack = str(ts)
-        preferences = user_data.get("preferences", "Standard best practices")
-
-
-    # --- PHASE 2: RETRIEVE CONTEXT (SINGLE PASS) ---
-    # We retrieve BOTH the text history AND the max similarity score.
-    # This score determines if we need to save this prompt later.
-    past_context, max_similarity = retrieve_context(request.user_id, request.prompt)
-
-
-    # --- PHASE 3: CONSTRUCT THE AI SYSTEM PROMPT ---
-    # This uses the CO-STAR framework to force the AI to be "Elite".
-    system_message = (
-        "You are an elite Prompt Engineer and Intent Optimizer.\n"
-        "Your goal is to transform the user's raw input into a high-precision LLM prompt.\n\n"
-        "### DECISION LOGIC:\n"
-        "1. PASS-THROUGH: If input is conversational ('Hi', 'Thanks'), return AS-IS.\n"
-        "2. ENGINEER: If input is a request for Code or Reasoning, rewrite it using the **CO-STAR Framework**:\n"
-        "   - Context: Define the role (User Profile: " + tech_stack + ").\n"
-        "   - Objective: Clear, actionable goal.\n"
-        "   - Style: " + preferences + ".\n"
-        "   - Tone: Professional & Technical.\n"
-        "   - Audience: Expert LLM.\n"
-        "   - Response: Format (e.g., Code Block, Markdown).\n\n"
-        "### CRITICAL RULES:\n"
-        "- **Context Injection:** Use the provided SESSION MEMORY to maintain continuity.\n"
-        "- **No Hallucinations:** Do not invent facts.\n"
-        "- **Output:** Return ONLY the final refined prompt text. No explanations."
-    )
-    
-    user_message = f"""
-    ### 1. SESSION MEMORY (Context from previous turns)
-    {past_context}
-
-    ### 2. RAW USER INPUT
-    "{request.prompt}"
-
-    ### TASK:
-    Rewrite the "Raw User Input" into a superior prompt using the System Guidelines.
-    """
-
-
-    # --- PHASE 4: GENERATE (Groq AI) ---
-    enhanced_prompt = request.prompt # Fallback to original
-    try:
-        client = get_groq_client()
-        if client is None:
-            raise HTTPException(status_code=500, detail="Groq client failed to initialize")
-        
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3
-        )
-        enhanced_prompt = chat_completion.choices[0].message.content
-    except Exception as e:
-        print(f"❌ Groq API Error: {e}")
-        # We continue even if AI fails, returning the original prompt so the user isn't blocked.
-
-
-    # --- PHASE 5: LOGGING (MongoDB) ---
-    # We always log the attempt for analytics/debugging
-    log_id = "memory-only"
-    if prompts_col is not None:
-        try:
-            log_entry = {
-                "user_id": request.user_id,
-                "timestamp": datetime.now(),
-                "platform": request.platform,
-                "original_input": request.prompt,
-                "enhanced_output": enhanced_prompt,
-                "context_used": past_context,
-                "similarity_score": max_similarity, # Useful to debug
-                "latency_sec": round(time.time() - start_time, 2),
-            }
-            result = prompts_col.insert_one(log_entry)
-            log_id = str(result.inserted_id)
-        except Exception as e:
-            print(f"⚠️ MongoDB log write failed: {e}")
-
-
-    # --- PHASE 6: SMART MEMORY STORAGE (Qdrant) ---
-    # We only save if the prompt is unique (redundancy check).
-    try:
-        # THRESHOLD CHECK: 
-        # If the prompt is >87% similar to an existing one, we assume it's a duplicate/retry.
-        if max_similarity > 0.87:
-            print(f"♻️ Redundancy Detected (Score: {max_similarity:.4f}). Skipping save.")
-        else:
-            vec = get_embedding(request.prompt)
-            if vec is not None:
-                q_client = init_qdrant()
-                if q_client:
-                    q_client.upsert(
-                        collection_name=COLLECTION_NAME,
-                        points=[
-                            PointStruct(
-                                id=int(time.time()), # Simple timestamp ID
-                                vector=vec,
-                                payload={
-                                    "user_id": request.user_id,
-                                    "original_prompt": request.prompt,
-                                    "refined_prompt": enhanced_prompt
-                                }
-                            )
-                        ]
-                    )
-                    print(f"💾 Memory Saved (New unique prompt).")
-    except Exception as e:
-        print(f"⚠️ Warning: Failed to save to Qdrant: {e}")
-
-    # --- RETURN ---
-    return {
-        "original": request.prompt,
-        "enhanced": enhanced_prompt,
-        "log_id": log_id,
-    }
-
 
 SOTA_SYSTEM_PROMPT = """
 You are a Principal Prompt Architect. Your goal is not to "fix" the user's prompt, but to translate their raw intent into a "SOTA" executable specification for an LLM.
@@ -415,18 +257,19 @@ You are a Principal Prompt Architect. Your goal is not to "fix" the user's promp
 ### YOUR PROTOCOL
 1. **Analyze**: Identify the user's core intent.
 2. **Architect**: Construct a prompt using the **CO-STAR+** framework:
-   - [ROLE]: Act as {Specific Expert Role}...
+   - [ROLE]: Act as {{Specific Expert Role}}...
    - [CONTEXT]: User context is {tech_stack}...
    - [TASK]: Your specific objective is...
    - [STRATEGY]: Before writing code, outline your step-by-step reasoning...
    - [CONSTRAINTS]: Do NOT use...
-   - [OUTPUT]: Provide the answer in {Specific Format}...
+   - [OUTPUT]: Provide the answer in {{Specific Format}}...
 
 ### INSTRUCTIONS
 - Return ONLY the final refined prompt.
 - Do NOT provide explanations.
 - If the prompt is a question TO YOU (like "what is this?"), answer it as a helper.
 """
+
 
 @app.post("/enhance")
 def enhance_prompt(request: PromptRequest):
@@ -481,6 +324,8 @@ def enhance_prompt(request: PromptRequest):
         print(f"❌ Groq API Error: {e}")
 
     # 4. LOGGING (MongoDB)
+
+    process_time = round(time.time() - start_time, 2) 
     log_id = "memory-only"
     if prompts_col is not None:
         try:
@@ -490,11 +335,11 @@ def enhance_prompt(request: PromptRequest):
                 "original": request.prompt,
                 "enhanced": enhanced_prompt,
                 "score": max_similarity,
-                "latency": round(time.time() - start_time, 2)
+                "latency": process_time            
             }
             res = prompts_col.insert_one(log_entry)
             log_id = str(res.inserted_id)
-        except: pass
+        except: pass    # <--- HANDLE ERRORS HERE
 
     # 5. MEMORY STORAGE (Qdrant)
     # Only save if unique (similarity < 0.90)
@@ -520,8 +365,10 @@ def enhance_prompt(request: PromptRequest):
     return {
         "original": request.prompt,
         "enhanced": enhanced_prompt,
-        "log_id": log_id
+        "log_id": log_id,
+        "latency": process_time
     }
+    
 
 # Run with: uvicorn main:app --reload
 
