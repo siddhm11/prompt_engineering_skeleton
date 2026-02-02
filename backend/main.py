@@ -65,6 +65,13 @@ except Exception as e:
 qdrant = None
 COLLECTION_NAME = "prompt_memory"
 
+# Add this with your other class definitions
+class TrackRequest(BaseModel):
+    user_id: str
+    prompt: str
+    platform: Optional[str] = "unknown"
+
+    
 def init_qdrant():
     """Lazily initialize Qdrant connection."""
     global qdrant
@@ -242,6 +249,45 @@ def register_user(profile: UserProfile):
     return {"message": f"User {profile.user_id} registered successfully."}
 
 
+@app.post("/track")
+def track_prompt(request: TrackRequest):
+    """
+    Silently learns from user prompts without modifying them.
+    """
+    # 1. Check for Redundancy (Don't memorize exact duplicates)
+    # We use a high threshold (0.95) because we want to capture distinct thoughts
+    _, max_similarity = retrieve_context(request.user_id, request.prompt)
+    
+    if max_similarity > 0.95:
+        return {"status": "skipped", "reason": "redundant"}
+
+    # 2. Vectorize & Save to Qdrant
+    try:
+        vec = get_embedding(request.prompt)
+        if vec:
+            q_client = init_qdrant()
+            if q_client:
+                q_client.upsert(
+                    collection_name=COLLECTION_NAME,
+                    points=[PointStruct(
+                        id=int(time.time()),
+                        vector=vec,
+                        payload={
+                            "user_id": request.user_id, 
+                            "original_prompt": request.prompt, 
+                            "refined_prompt": request.prompt, # No refinement, so we map it to itself
+                            "source": "passive_tracker"
+                        }
+                    )]
+                )
+                print(f"🧠 passively learned: {request.prompt[:50]}...")
+    except Exception as e:
+        print(f"❌ Tracking Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "memorized"}
+
+
 SOTA_SYSTEM_PROMPT = """
 You are a Principal Prompt Architect. Your goal is not to "fix" the user's prompt, but to translate their raw intent into a "SOTA" executable specification for an LLM.
 
@@ -316,7 +362,7 @@ def enhance_prompt(request: PromptRequest):
                 {"role": "system", "content": formatted_system},
                 {"role": "user", "content": user_message}
             ],
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.3, # Low temp for precision
         )
         enhanced_prompt = chat_completion.choices[0].message.content
@@ -368,7 +414,7 @@ def enhance_prompt(request: PromptRequest):
         "log_id": log_id,
         "latency": process_time
     }
-    
+
 
 # Run with: uvicorn main:app --reload
 

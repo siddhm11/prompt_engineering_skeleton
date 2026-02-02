@@ -1,9 +1,12 @@
-// content.js - FINAL VERSION
+// extension/content.js - FINAL ROBUST VERSION
 
-// PASTE YOUR LOCALTUNNEL URL HERE
-const API_URL = "https://stale-peaches-check.loca.lt";
+const API_URL = "https://siddhm11-prompt-engine.hf.space"; 
 
+console.log("🚀 Prompt Memory: Script loaded on", window.location.hostname);
+
+// --- 1. EXISTING BUTTON LOGIC ---
 function createButton(targetArea) {
+  // Prevent adding multiple buttons
   if (targetArea.parentElement.querySelector(".ai-enhance-btn")) return;
 
   const btn = document.createElement("button");
@@ -17,14 +20,11 @@ function createButton(targetArea) {
     if (!originalText) return alert("Please type a prompt first!");
 
     btn.innerText = "🧠 Thinking...";
-
+    
     try {
       const response = await fetch(`${API_URL}/enhance`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Bypass-Tunnel-Reminder": "true", // <--- THE FIX
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: "user_001",
           prompt: originalText,
@@ -32,10 +32,7 @@ function createButton(targetArea) {
         }),
       });
 
-      if (!response.ok) throw new Error("Server Error: " + response.statusText);
-
       const data = await response.json();
-
       const useEnhanced = confirm(
         `ORIGINAL:\n${data.original}\n\n✨ ENHANCED:\n${data.enhanced}\n\nPress OK to use Enhanced.`
       );
@@ -49,31 +46,98 @@ function createButton(targetArea) {
         }
       }
     } catch (error) {
-      alert("Error: Is your Python server running? " + error.message);
+      alert("Error: " + error.message);
     } finally {
       btn.innerText = "✨ Memory";
     }
   };
 
-  targetArea.parentElement.style.position = "relative";
+  // Ensure positioning works relative to the container
+  if (getComputedStyle(targetArea.parentElement).position === 'static') {
+      targetArea.parentElement.style.position = "relative";
+  }
   targetArea.parentElement.appendChild(btn);
+
+  // ✅ Attach the new Robust Tracker
+  setupPassiveTracking(targetArea);
 }
 
-const observer = new MutationObserver(() => {
-  // Selectors for different platforms
+
+// --- 2. ROBUST PASSIVE TRACKING (Keys + Clicks) ---
+function setupPassiveTracking(inputElement) {
+    if (inputElement.dataset.hasTracker) return;
+    inputElement.dataset.hasTracker = "true";
+
+    console.log("🕵️ Passive tracker attached");
+
+    // A. Track text AS YOU TYPE (to handle instant-clearing on send)
+    let lastTypedText = "";
+    inputElement.addEventListener("input", (e) => {
+        lastTypedText = e.target.value || e.target.innerText;
+    });
+
+    // Helper: Send to Backend
+    const sendToMemory = (text) => {
+        if (text && text.trim().length > 5) {
+            console.log("📡 Passive tracking:", text.slice(0, 30) + "...");
+            fetch(`${API_URL}/track`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    user_id: "user_001",
+                    prompt: text,
+                    platform: window.location.hostname
+                })
+            }).catch(err => console.error("Tracker failed:", err));
+        }
+    };
+
+    // B. Listener 1: The "Enter" Key
+    inputElement.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            // Use the variable we've been tracking
+            sendToMemory(lastTypedText);
+        }
+    });
+
+    // C. Listener 2: The "Send" Button Click
+    // We listen to the parent container for ANY button click
+    const parentForm = inputElement.closest("form") || inputElement.parentElement.parentElement;
+    
+    if (parentForm) {
+        parentForm.addEventListener("click", (e) => {
+            // 1. Find the closest button to what was clicked
+            const clickedBtn = e.target.closest("button");
+            
+            // 2. If a button was clicked, and it's NOT our "Memory" button
+            if (clickedBtn && !clickedBtn.classList.contains("ai-enhance-btn")) {
+                console.log("🖱️ Send button clicked!");
+                sendToMemory(lastTypedText);
+            }
+        }, { capture: true }); // 'capture' helps catch it before other scripts stop it
+    }
+}
+
+
+// --- 3. OBSERVER LOGIC ---
+function checkForInput() {
   const selectors = [
-    "#prompt-textarea",                 // ChatGPT
-    ".ql-editor[contenteditable='true']", // Gemini
-    "div[contenteditable='true']",      // Claude & others
-    "textarea"                          // Standard fallbacks
+    "#prompt-textarea",           // ChatGPT
+    "[contenteditable='true']",   // Claude/Gemini
+    "textarea"                    // Fallback
   ];
-  
+
   selectors.forEach((sel) => {
     document.querySelectorAll(sel).forEach((el) => {
-      // Prevent adding multiple buttons to the same container
-      if (!el.parentElement.querySelector(".ai-enhance-btn")) {
+      // Check if it's visible and doesn't have a button yet
+      if (el.offsetParent !== null && !el.parentElement.querySelector(".ai-enhance-btn")) {
         createButton(el);
       }
     });
   });
-});
+}
+
+// Start
+checkForInput();
+const observer = new MutationObserver(() => checkForInput());
+observer.observe(document.body, { childList: true, subtree: true });
