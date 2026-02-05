@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Prompt Memory Login</title>
+    <style>
+        body {
+            width: 300px;
+            font-family: sans-serif;
+            padding: 15px;
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        #status {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #555;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>✨ Prompt Memory</h2>
+
+    <div id="login-section">
+        <!-- Step 1: Email -->
+        <div id="step-1">
+            <p>Enter your email to receive a login code.</p>
+            <input type="email" id="email" placeholder="user@example.com" />
+            <button id="send-otp-btn">Send Code</button>
+        </div>
+
+        <!-- Step 2: OTP -->
+        <div id="step-2" class="hidden">
+            <p>Enter the 6-digit code sent to your backend console.</p>
+            <input type="text" id="otp-code" placeholder="123456" maxlength="6" />
+            <button id="verify-otp-btn">Verify & Login</button>
+            <p style="font-size: 0.8em; text-align: center; cursor: pointer; color: blue;" id="back-to-email">Back</p>
+        </div>
+    </div>
+
+    <div id="profile-section" class="hidden">
+        <p>✅ Logged in as:</p>
+        <strong id="user-display"></strong>
+        <p style="font-size:0.8em; color: gray; word-break: break-all;" id="uuid-display"></p>
+        <button id="logout-btn" style="background-color: #d9534f; margin-top: 10px;">Logout</button>
+    </div>
+
+    <p id="status"></p>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
