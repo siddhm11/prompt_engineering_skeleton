@@ -15,7 +15,7 @@ def send_email_sendgrid(to_email: str, subject: str, content: str):
     }
     data = {
         "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": "noreply@promptmemory.com", "name": "Prompt Memory"},
+        "from": {"email": "aminyahouse2000@gmail.com", "name": "Prompt Memory"},
         "subject": subject,
         "content": [{"type": "text/plain", "value": content}]
     }
