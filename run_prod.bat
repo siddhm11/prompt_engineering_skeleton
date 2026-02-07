@@ -7,7 +7,7 @@ IF EXIST "backend\venv\Scripts\activate.bat" (
     echo Virtual Environment Activated.
 ) ELSE (
     echo ⚠️ No virtual environment found in backend\venv.
-    echo Running with system Python (might fail if dependencies missing).
+    echo Running with system Python ^(might fail if dependencies missing^).
 )
 
 :: Run Uvicorn from ROOT, treating 'backend' as a package.

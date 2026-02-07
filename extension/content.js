@@ -1,7 +1,7 @@
 // extension/content.js - FINAL ROBUST VERSION
 
 // const API_URL = "https://siddhm11-prompt-engine.hf.space";
-const API_URL = "http://localhost:8000";
+const API_URL = "https://siddhm11-prompt-engine.hf.space";
 
 console.log("🚀 Prompt Memory: Script loaded on", window.location.hostname);
 

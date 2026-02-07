@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
 from .config import settings
 
-# MongoDB
+#MongoDB
 class MongoDB:
     client: MongoClient = None
     db = None
@@ -22,6 +22,16 @@ class MongoDB:
             cls.db = cls.client["prompt_engine_db"]
             cls.users_col = cls.db["users"]
             cls.prompts_col = cls.db["prompt_logs"]
+
+            # 1. Index for Users: Ensures fast lookups and unique user_ids
+            cls.users_col.create_index("user_id", unique=True)
+
+            # 2. Index for Logs: Speed up finding a user's history sorted by time
+            #    This matches your query: .find({"user_id": ...}).sort("timestamp", -1)
+            cls.prompts_col.create_index([("user_id", 1), ("timestamp", -1)])
+            
+            print("✅ MongoDB Indexes Verified")
+
             print("✅ MongoDB Connected")
         except Exception as e:
             print(f"⚠️ MongoDB not available ({e}) — using in-memory fallback.")
