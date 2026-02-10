@@ -89,20 +89,27 @@ function setupPassiveTracking(inputElement) {
     lastTypedText = e.target.value || e.target.innerText;
   });
 
+
+
   // Helper: Send to Backend
   const sendToMemory = (text) => {
     if (text && text.trim().length > 5) {
-
       // Check auth first
-      chrome.storage.local.get(["user_id"], (result) => {
-        if (!result.user_id) return; // Don't track if not logged in
+      // 1. We now ask for "token" as well as "user_id"
+      chrome.storage.local.get(["user_id", "token"], (result) => {
+
+        // 2. We verify we have both
+        if (!result.user_id || !result.token) return;
 
         console.log("📡 Passive tracking for user:", result.user_id);
         fetch(`${API_URL}/track`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${result.token}` // <--- 3. ADD THIS LINE
+          },
           body: JSON.stringify({
-            user_id: result.user_id, // <--- DYNAMIC ID
+            user_id: result.user_id,
             prompt: text,
             platform: window.location.hostname
           })
