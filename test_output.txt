@@ -1,0 +1,22 @@
+
+--- Testing SIMPLE Prompt ---
+Traceback (most recent call last):
+  File "C:\Users\siddhant\Documents\Documents\Document stuff\real_siddhant\projects\prompt_engineering_skeleton\backend\verify_prompts_test.py", line 81, in <module>
+    test_simple_prompt()
+  File "C:\Users\siddhant\Documents\Documents\Document stuff\real_siddhant\projects\prompt_engineering_skeleton\backend\verify_prompts_test.py", line 43, in test_simple_prompt
+    request = PromptRequest(prompt="what is bitcoin")
+  File "C:\Users\siddhant\AppData\Local\Programs\Python\Python310\lib\site-packages\pydantic\main.py", line 164, in __init__
+    __pydantic_self__.__pydantic_validator__.validate_python(data, self_instance=__pydantic_self__)
+pydantic_core._pydantic_core.ValidationError: 1 validation error for PromptRequest
+user_id
+  Field required [type=missing, input_value={'prompt': 'what is bitcoin'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.5/v/missing
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\siddhant\Documents\Documents\Document stuff\real_siddhant\projects\prompt_engineering_skeleton\backend\verify_prompts_test.py", line 85, in <module>
+    print(f"\n\u274c Test Failed: {e}")
+  File "C:\Users\siddhant\AppData\Local\Programs\Python\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u274c' in position 2: character maps to <undefined>
