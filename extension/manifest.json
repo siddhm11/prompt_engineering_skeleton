@@ -1,11 +1,32 @@
 {
   "manifest_version": 3,
   "name": "Prompt Memory",
-  "version": "1.0",
+  "version": "2.0",
+  "description": "One-click prompt engineering — turns your raw thoughts into precision-crafted LLM queries.",
   "permissions": [
     "activeTab",
     "storage"
   ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://siddhm11-prompt-engine.hf.space/*"
+  ],
+  "commands": {
+    "enhance-prompt": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      },
+      "description": "Enhance the current prompt"
+    },
+    "voice-prompt": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+V",
+        "mac": "Command+Shift+V"
+      },
+      "description": "Voice to Prompt"
+    }
+  },
   "action": {
     "default_popup": "popup.html"
   },
@@ -15,7 +36,9 @@
         "https://chatgpt.com/*",
         "https://gemini.google.com/*",
         "https://claude.ai/*",
-        "https://www.perplexity.ai/*"
+        "https://www.perplexity.ai/*",
+        "https://grok.com/*",
+        "https://x.com/i/grok*"
       ],
       "js": [
         "content.js"

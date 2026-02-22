@@ -123,3 +123,7 @@ pnpm-debug.log*
 
 # Project-specific ignores
 backend/venv/
+backend/.env
+notebooks_for_testing/
+.qodo/
+.gemini/

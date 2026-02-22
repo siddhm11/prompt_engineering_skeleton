@@ -1,4 +1,4 @@
-const API_URL = "https://siddhm11-prompt-engine.hf.space";
+const API_URL = "http://localhost:8000";
 
 const step1 = document.getElementById("step-1");
 const step2 = document.getElementById("step-2");

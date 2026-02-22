@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.database import MongoDB
-from .routers import auth, users, prompts
+from .routers import auth, users, prompts, saved_prompts
 
 app = FastAPI(title="Context-Aware Prompt Engine")
 
@@ -28,6 +28,7 @@ def health_check():
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(prompts.router)
+app.include_router(saved_prompts.router)
 
 if __name__ == "__main__":
     import uvicorn
