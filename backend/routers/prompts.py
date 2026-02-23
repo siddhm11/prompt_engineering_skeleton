@@ -1,7 +1,9 @@
 
+import io
 import time
+import json
 from bson import ObjectId
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from ..models.schemas import TrackRequest, EnhanceRequest, FeedbackRequest
 from ..core.security import verify_jwt
 from ..core.database import MongoDB, in_memory_users, in_memory_saved_prompts
@@ -208,7 +210,7 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            model="openai/gpt-oss-120b",
+            model="llama-3.3-70b-versatile",
             temperature=0.2 if mode == "quick" else 0.4 if mode == "creative" else 0.3,
         )
         enhanced_prompt = chat_completion.choices[0].message.content
@@ -265,6 +267,86 @@ def enhance_feedback(request: FeedbackRequest, user_id: str = Depends(verify_jwt
             print(f"⚠️ Feedback store error: {e}")
     
     return {"status": "recorded", "rating": request.rating}
+
+
+@router.post("/voice-enhance")
+async def voice_enhance(
+    audio: UploadFile = File(...),
+    mode: str = Form("deep"),
+    platform: str = Form("unknown"),
+    conversation_context: str = Form(""),
+    selected_prompt_ids: str = Form("[]"),
+    user_id: str = Depends(verify_jwt),
+):
+    """
+    Voice-to-Prompt pipeline:
+      1. Transcribe audio with Groq Whisper (whisper-large-v3-turbo)
+      2. Enhance transcript with LLM (llama-3.3-70b-versatile)
+      3. Return both transcription and enhanced prompt
+    """
+    start_time = time.time()
+
+    # ── 1. READ AUDIO ──
+    audio_bytes = await audio.read()
+    if len(audio_bytes) < 100:
+        return {"error": "Audio too short. Please speak for at least a second."}
+
+    # ── 2. TRANSCRIBE WITH WHISPER ──
+    transcribed_text = ""
+    try:
+        client = get_groq_client()
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = audio.filename or "audio.webm"
+
+        transcription = client.audio.transcriptions.create(
+            file=(audio_file.name, audio_file),
+            model="whisper-large-v3-turbo",
+            language="en",
+            response_format="text",
+        )
+        transcribed_text = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
+    except Exception as e:
+        print(f"❌ Whisper transcription error: {e}")
+        return {"error": f"Transcription failed: {str(e)}"}
+
+    if len(transcribed_text) < 3:
+        return {"error": "Could not understand audio. Try speaking clearly."}
+
+    transcription_time = round(time.time() - start_time, 2)
+
+    # ── 3. ENHANCE THE TRANSCRIPT ──
+    # Parse form data
+    try:
+        ctx_list = json.loads(conversation_context) if conversation_context else []
+    except Exception:
+        ctx_list = []
+    try:
+        sel_ids = json.loads(selected_prompt_ids) if selected_prompt_ids else []
+    except Exception:
+        sel_ids = []
+
+    # Build an EnhanceRequest and reuse the enhance logic
+    enhance_req = EnhanceRequest(
+        prompt=transcribed_text,
+        mode=mode,
+        platform=platform,
+        conversation_context=ctx_list if ctx_list else None,
+        selected_prompt_ids=sel_ids if sel_ids else None,
+    )
+    enhance_result = enhance_prompt(enhance_req, user_id)
+
+    total_time = round(time.time() - start_time, 2)
+
+    return {
+        "transcription": transcribed_text,
+        "enhanced": enhance_result.get("enhanced", transcribed_text),
+        "original": transcribed_text,
+        "mode": mode,
+        "transcription_time": transcription_time,
+        "total_time": total_time,
+        "context_used": enhance_result.get("context_used"),
+        "log_id": enhance_result.get("log_id", ""),
+    }
 
 
 def _fetch_saved_prompt(prompt_id: str, user_id: str) -> dict:

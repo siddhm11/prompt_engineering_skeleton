@@ -32,3 +32,6 @@ numpy<2
 # Auth & Utilities
 pyjwt==2.8.0
 requests==2.31.0
+
+# File Upload (voice-to-prompt)
+python-multipart

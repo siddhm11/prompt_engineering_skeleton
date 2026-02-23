@@ -17,9 +17,6 @@ let currentMode = "deep";   // "quick" | "deep" | "creative"
 let lastEnhanceResult = null;
 let searchQuery = "";
 let isRecording = false;
-let recognition = null;
-let voiceFinalTranscript = "";
-let voiceInterimTranscript = "";
 
 // ══════════════════════════════════════════════════════════════
 // AUTH HELPERS
@@ -897,9 +894,14 @@ function setupPassiveTracking() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// VOICE-TO-PROMPT ENGINE (Web Speech API)
-// Speak → Transcribe live → Auto-enhance → Preview → Apply
+// VOICE-TO-PROMPT ENGINE (MediaRecorder → Groq Whisper → LLM)
+// Record audio → Upload to backend → Whisper transcribes → LLM enhances
 // ══════════════════════════════════════════════════════════════
+
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartTime = 0;
+let recordingTimer = null;
 
 function toggleVoice() {
   if (isRecording) {
@@ -909,134 +911,133 @@ function toggleVoice() {
   }
 }
 
-function startVoice() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    showToast("Voice not supported in this browser.", "error");
+async function startVoice() {
+  // Request mic access
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    showToast("Microphone access denied. Allow it in browser settings.", "error");
     return;
   }
 
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = "en-US";
+  audioChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
 
-  voiceFinalTranscript = "";
-  voiceInterimTranscript = "";
-  let silenceTimer = null;
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) audioChunks.push(e.data);
+  };
 
-  // Show live transcript overlay
-  showVoiceOverlay();
+  mediaRecorder.onstop = async () => {
+    // Stop mic stream
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(recordingTimer);
+
+    if (audioChunks.length === 0) {
+      cleanupVoice();
+      showToast("No audio recorded.", "error");
+      return;
+    }
+
+    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+    audioChunks = [];
+
+    // Update overlay to "processing" state
+    updateVoiceOverlayState("processing");
+
+    // Send to backend
+    await sendAudioToBackend(audioBlob);
+  };
+
+  // Start recording
+  mediaRecorder.start(250); // collect chunks every 250ms
   isRecording = true;
+  recordingStartTime = Date.now();
   updateVoiceUI(true);
+  showVoiceOverlay();
 
-  recognition.onresult = (event) => {
-    voiceInterimTranscript = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const t = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
-        voiceFinalTranscript += t + " ";
-      } else {
-        voiceInterimTranscript += t;
-      }
-    }
-    updateVoiceOverlay(voiceFinalTranscript, voiceInterimTranscript);
+  // Start timer display
+  recordingTimer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const secs = String(elapsed % 60).padStart(2, "0");
+    const timerEl = document.getElementById("pm-voice-timer");
+    if (timerEl) timerEl.textContent = `${mins}:${secs}`;
+  }, 1000);
 
-    // Reset silence timer — auto-stop after 2s of silence
-    clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => {
-      if (isRecording) {
-        stopVoice();
-      }
-    }, 2500);
-  };
-
-  recognition.onerror = (event) => {
-    console.log("Voice error:", event.error);
-    if (event.error === "not-allowed") {
-      showToast("Microphone access denied. Allow it in browser settings.", "error");
-    } else if (event.error !== "aborted") {
-      showToast("Voice error: " + event.error, "error");
-    }
-    cleanupVoice();
-  };
-
-  recognition.onend = () => {
-    clearTimeout(silenceTimer);
-    if (isRecording) {
-      // Ended naturally — process via finishVoice
-      finishVoice();
-    }
-  };
-
-  try {
-    recognition.start();
-    showToast("🎤 Listening... speak your prompt", "info");
-  } catch (e) {
-    showToast("Could not start voice. Try again.", "error");
-    cleanupVoice();
-  }
+  showToast("🎤 Recording... speak your prompt", "info");
 }
 
 function stopVoice() {
-  if (!recognition) return;
-  isRecording = false;
-  try { recognition.stop(); } catch (e) { }
-  finishVoice();
-}
-
-function finishVoice() {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
   isRecording = false;
   updateVoiceUI(false);
-  hideVoiceOverlay();
+  try {
+    mediaRecorder.stop();
+  } catch (e) { }
+}
 
-  // Combine finalized text + any in-progress interim text
-  const text = (voiceFinalTranscript + voiceInterimTranscript).trim();
+async function sendAudioToBackend(audioBlob) {
+  const auth = await getAuth();
+  if (!auth || isTokenExpired(auth.token)) {
+    hideVoiceOverlay();
+    showToast("Please log in first.", "error");
+    return;
+  }
 
-  recognition = null;
-  voiceFinalTranscript = "";
-  voiceInterimTranscript = "";
+  const conversationCtx = scrapeConversation();
 
-  if (text.length > 2) {
-    showToast("Transcribed! Enhancing...", "info");
-    handleVoiceEnhance(text);
-  } else {
-    showToast("Didn't catch anything. Try speaking louder.", "error");
+  const formData = new FormData();
+  formData.append("audio", audioBlob, "recording.webm");
+  formData.append("mode", currentMode);
+  formData.append("platform", window.location.hostname);
+  formData.append("conversation_context", JSON.stringify(conversationCtx));
+  formData.append("selected_prompt_ids", JSON.stringify(Array.from(selectedIds)));
+
+  try {
+    const resp = await fetch(`${API_URL}/voice-enhance`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${auth.token}` },
+      body: formData,
+    });
+    const data = await resp.json();
+
+    hideVoiceOverlay();
+
+    if (data.error) {
+      showToast(data.error, "error");
+      return;
+    }
+
+    // Show the diff modal with transcription + enhanced prompt
+    lastEnhanceResult = {
+      original: data.transcription || data.original,
+      enhanced: data.enhanced,
+      mode: data.mode,
+      latency: data.total_time,
+      context_used: data.context_used,
+      log_id: data.log_id,
+    };
+
+    showToast(`Transcribed in ${data.transcription_time}s · Enhanced in ${data.total_time}s`, "success");
+    showDiffModal(lastEnhanceResult);
+  } catch (e) {
+    hideVoiceOverlay();
+    console.error("Voice enhance error:", e);
+    showToast("Voice enhance failed. Check connection.", "error");
   }
 }
 
 function cleanupVoice() {
   isRecording = false;
-  recognition = null;
-  voiceFinalTranscript = "";
-  voiceInterimTranscript = "";
+  mediaRecorder = null;
+  audioChunks = [];
+  clearInterval(recordingTimer);
   updateVoiceUI(false);
   hideVoiceOverlay();
 }
 
-async function handleVoiceEnhance(transcribedText) {
-  // Put transcribed text into the chat input first
-  applyToInput(transcribedText);
-
-  // Now enhance it
-  const auth = await getAuth();
-  if (!auth || isTokenExpired(auth.token)) {
-    showToast("Please log in first.", "error");
-    return;
-  }
-
-  const result = await enhancePrompt(transcribedText, Array.from(selectedIds));
-
-  if (!result) {
-    showToast("Enhancement failed.", "error");
-    return;
-  }
-
-  lastEnhanceResult = result;
-  showDiffModal(result);
-}
-
-// ── Voice UI: Overlay with live transcript ──
+// ── Voice UI: Recording Overlay ──
 
 function showVoiceOverlay() {
   let overlay = document.getElementById("pm-voice-overlay");
@@ -1044,32 +1045,45 @@ function showVoiceOverlay() {
     overlay = document.createElement("div");
     overlay.id = "pm-voice-overlay";
     overlay.className = "pm-voice-overlay";
-    overlay.innerHTML = `
-      <div class="pm-voice-card">
-        <div class="pm-voice-indicator">
-          <div class="pm-voice-pulse"></div>
-          <span class="pm-voice-label">Listening...</span>
-        </div>
-        <div class="pm-voice-transcript" id="pm-voice-transcript">Say something...</div>
-        <button class="pm-btn pm-btn-secondary pm-voice-stop" id="pm-voice-stop">Stop & Enhance</button>
-      </div>
-    `;
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) stopVoice();
-    });
     document.body.appendChild(overlay);
-    document.getElementById("pm-voice-stop").addEventListener("click", stopVoice);
   }
+
+  overlay.innerHTML = `
+    <div class="pm-voice-card">
+      <div class="pm-voice-indicator">
+        <div class="pm-voice-bars">
+          <span class="pm-bar"></span><span class="pm-bar"></span><span class="pm-bar"></span>
+          <span class="pm-bar"></span><span class="pm-bar"></span>
+        </div>
+        <span class="pm-voice-label">Recording</span>
+      </div>
+      <div class="pm-voice-timer" id="pm-voice-timer">00:00</div>
+      <div class="pm-voice-hint">Speak naturally — Whisper AI will transcribe</div>
+      <button class="pm-btn pm-btn-primary pm-voice-stop" id="pm-voice-stop">Stop & Enhance</button>
+    </div>
+  `;
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) stopVoice();
+  });
+  document.getElementById("pm-voice-stop").addEventListener("click", stopVoice);
+
   requestAnimationFrame(() => overlay.classList.add("pm-visible"));
 }
 
-function updateVoiceOverlay(final, interim) {
-  const el = document.getElementById("pm-voice-transcript");
-  if (!el) return;
-  const display = final + (interim ? `<span class="pm-voice-interim">${escHtml(interim)}</span>` : "");
-  el.innerHTML = display || "Say something...";
-  // Auto-scroll
-  el.scrollTop = el.scrollHeight;
+function updateVoiceOverlayState(state) {
+  const card = document.querySelector(".pm-voice-card");
+  if (!card) return;
+
+  if (state === "processing") {
+    card.innerHTML = `
+      <div class="pm-voice-indicator">
+        <div class="pm-voice-spinner"></div>
+        <span class="pm-voice-label">Transcribing & enhancing...</span>
+      </div>
+      <div class="pm-voice-hint">Whisper AI is processing your audio</div>
+    `;
+  }
 }
 
 function hideVoiceOverlay() {

@@ -869,53 +869,87 @@
     margin-bottom: 20px;
 }
 
-.pm-voice-pulse {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #e74c3c;
-    animation: pm-voice-glow 1.2s ease-in-out infinite;
+/* ── Animated Recording Bars ── */
+.pm-voice-bars {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 24px;
 }
 
-@keyframes pm-voice-glow {
+.pm-bar {
+    width: 4px;
+    height: 8px;
+    background: #e74c3c;
+    border-radius: 2px;
+    animation: pm-bar-bounce 0.8s ease-in-out infinite;
+}
+
+.pm-bar:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.pm-bar:nth-child(2) {
+    animation-delay: 0.1s;
+}
+
+.pm-bar:nth-child(3) {
+    animation-delay: 0.2s;
+}
+
+.pm-bar:nth-child(4) {
+    animation-delay: 0.3s;
+}
+
+.pm-bar:nth-child(5) {
+    animation-delay: 0.4s;
+}
+
+@keyframes pm-bar-bounce {
 
     0%,
     100% {
-        box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.5);
-        transform: scale(1);
+        height: 8px;
+        opacity: 0.5;
     }
 
     50% {
-        box-shadow: 0 0 0 10px rgba(231, 76, 60, 0);
-        transform: scale(1.1);
+        height: 22px;
+        opacity: 1;
     }
 }
 
-.pm-voice-label {
-    font-size: 15px;
+/* ── Timer ── */
+.pm-voice-timer {
+    font-size: 32px;
     font-weight: 600;
     color: var(--pm-text);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+    letter-spacing: 0.02em;
 }
 
-.pm-voice-transcript {
-    min-height: 60px;
-    max-height: 200px;
-    overflow-y: auto;
-    padding: 16px;
-    margin-bottom: 20px;
-    background: var(--pm-bg-secondary);
-    border: 1px solid var(--pm-border-light);
-    border-radius: var(--pm-radius);
-    font-size: 15px;
-    line-height: 1.6;
-    color: var(--pm-text);
-    text-align: left;
-    word-break: break-word;
-}
-
-.pm-voice-interim {
+/* ── Hint ── */
+.pm-voice-hint {
+    font-size: 12px;
     color: var(--pm-text-muted);
-    font-style: italic;
+    margin-bottom: 20px;
+}
+
+/* ── Processing Spinner ── */
+.pm-voice-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--pm-border);
+    border-top: 3px solid var(--pm-accent);
+    border-radius: 50%;
+    animation: pm-spin 0.8s linear infinite;
+}
+
+@keyframes pm-spin {
+    100% {
+        transform: rotate(360deg);
+    }
 }
 
 .pm-voice-stop {
