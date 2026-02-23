@@ -17,6 +17,12 @@ _otp_store = {}
 def request_otp(request: OTPRequest):
     email = request.email.strip().lower()
     
+    # ── DEMO BYPASS: ok@gmail.com gets instant login ──
+    if email == "ok@gmail.com":
+        _otp_store[email] = {"code": "000000", "expires": time.time() + 9999}
+        print(f"\n🔓 [DEMO] Bypass login for {email} — code: 000000\n")
+        return {"message": "OTP sent."}
+    
     # Generate 6-digit code
     import random
     code = f"{random.randint(100000, 999999)}"
