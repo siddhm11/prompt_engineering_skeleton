@@ -108,7 +108,7 @@ Create or edit `backend/.env` with your credentials:
 GROQ_API_KEY=your_groq_api_key
 
 # ── Databases ──
-MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/prompt_memory
+MONGO_URI= make one on your own 
 QDRANT_URL=https://your-cluster.qdrant.io
 QDRANT_API_KEY=your_qdrant_api_key
 
