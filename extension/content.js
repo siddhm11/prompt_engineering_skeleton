@@ -1,7 +1,7 @@
 // extension/content.js — Prompt Memory v3 (Revolutionary)
 // One-click prompt engineering. Conversation-aware. Mode-aware. Platform-aware.
 
-const API_URL = "http://localhost:8000";
+const API_URL = "https://siddhm11-prompt-engine.hf.space";
 
 console.log("Prompt Memory v3: loaded on", window.location.hostname);
 

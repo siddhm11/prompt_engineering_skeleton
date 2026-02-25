@@ -87,7 +87,7 @@ def google_login():
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Server missing Google Client ID")
         
-    redirect_uri = "http://localhost:8000/auth/google/callback"
+    redirect_uri = "https://siddhm11-prompt-engine.hf.space/auth/google/callback"
     scope = "openid email profile"
     auth_url = (
         f"https://accounts.google.com/o/oauth2/v2/auth?"
@@ -108,7 +108,7 @@ async def google_callback(code: str):
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
         "code": code,
         "grant_type": "authorization_code",
-        "redirect_uri": "http://localhost:8000/auth/google/callback"
+        "redirect_uri": "https://siddhm11-prompt-engine.hf.space/auth/google/callback"
     }
     
     async with httpx.AsyncClient() as client:
