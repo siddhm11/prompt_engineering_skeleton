@@ -54,6 +54,7 @@ class EnhanceRequest(BaseModel):
     mode: Optional[str] = "deep"  # quick | deep | creative
     conversation_context: Optional[List[str]] = None
     selected_prompt_ids: Optional[List[str]] = None
+    skip_similarity: Optional[bool] = False  # True = "Enhance Prompt" only, False = "Enhance + Auto-Context"
 
 class FeedbackRequest(BaseModel):
     """Thumbs up/down on an enhanced prompt."""
@@ -61,4 +62,9 @@ class FeedbackRequest(BaseModel):
     rating: str  # "up" | "down"
     original: Optional[str] = None
     enhanced: Optional[str] = None
+
+class SavePromptRequest(BaseModel):
+    """Explicit opt-in save of a user's prompt to the database."""
+    prompt: str
+    platform: Optional[str] = None
 

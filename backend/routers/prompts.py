@@ -3,8 +3,8 @@ import io
 import time
 import json
 from bson import ObjectId
-from fastapi import APIRouter, Depends, UploadFile, File, Form
-from ..models.schemas import TrackRequest, EnhanceRequest, FeedbackRequest
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from ..models.schemas import TrackRequest, EnhanceRequest, FeedbackRequest, SavePromptRequest
 from ..core.security import verify_jwt
 from ..core.database import MongoDB, in_memory_users, in_memory_saved_prompts
 from ..services.memory_service import MemoryService
@@ -150,19 +150,21 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
             label = doc.get("title") or "Saved Prompt"
             selected_context_parts.append(f"[Selected by user] {label}: \"{doc['content']}\"")
 
-    # ── 4. SIMILARITY SEARCH ON SAVED PROMPTS ──
-    similar_saved = MemoryService.search_saved_prompts(
-        user_id=user_id,
-        query_text=request.prompt,
-        limit=3,
-        exclude_ids=selected_ids,
-    )
+    # ── 4. SIMILARITY SEARCH ON SAVED PROMPTS (skip if skip_similarity=True) ──
+    similar_saved = []
     similarity_context_parts = []
-    for item in similar_saved:
-        label = item.get("title") or "Saved Prompt"
-        similarity_context_parts.append(
-            f"[Auto-matched] {label}: \"{item['content']}\""
+    if not request.skip_similarity:
+        similar_saved = MemoryService.search_saved_prompts(
+            user_id=user_id,
+            query_text=request.prompt,
+            limit=3,
+            exclude_ids=selected_ids,
         )
+        for item in similar_saved:
+            label = item.get("title") or "Saved Prompt"
+            similarity_context_parts.append(
+                f"[Auto-matched] {label}: \"{item['content']}\""
+            )
 
     # ── 5. BUILD SYSTEM PROMPT ──
     system_parts = [
@@ -229,9 +231,7 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
         latency=process_time,
     )
 
-    # ── 9. MEMORIZE (if unique) ──
-    if max_similarity < 0.90:
-        MemoryService.memorize_strategy(user_id, request.prompt, enhanced_prompt)
+    # ── 9. MEMORIZE removed — user must explicitly save via /prompts/save ──
 
     return {
         "original": request.prompt,
@@ -364,3 +364,40 @@ def _fetch_saved_prompt(prompt_id: str, user_id: str) -> dict:
         if doc and doc.get("user_id") == user_id:
             return doc
         return None
+
+
+# ══════════════════════════════════════════════════════════════
+# PROMPT HISTORY & EXPLICIT SAVE
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/prompts/history")
+def get_prompt_history(
+    q: str = Query("", description="Search query"),
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    user_id: str = Depends(verify_jwt),
+):
+    """Search/list user's past saved prompts from MongoDB."""
+    results = MemoryService.search_prompt_logs(
+        user_id=user_id, query=q, limit=limit, skip=skip
+    )
+    return {"prompts": results}
+
+
+@router.post("/prompts/save")
+def save_prompt(request: SavePromptRequest, user_id: str = Depends(verify_jwt)):
+    """
+    Explicitly save a prompt to the database + Qdrant.
+    Only called when user clicks 'Save' — no automatic saving.
+    """
+    # Log to MongoDB
+    log_id = MemoryService.log_prompt(
+        user_id=user_id,
+        original=request.prompt,
+        source="user_saved",
+    )
+
+    # Memorize to Qdrant for future similarity matching
+    MemoryService.memorize_strategy(user_id, request.prompt, request.prompt)
+
+    return {"status": "saved", "log_id": log_id}

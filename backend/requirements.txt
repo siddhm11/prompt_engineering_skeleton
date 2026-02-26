@@ -1,37 +1,30 @@
-# fastapi==0.104.1
-# uvicorn==0.24.0
-# pydantic==2.5.0
-# python-dotenv==1.0.0
-# qdrant-client==1.16.2
-# sentence-transformers==2.7.0
-# huggingface-hub==0.19.0
-# groq==0.9.0
-# pymongo==4.6.0
-
+# Core Framework
 fastapi==0.110.0
 uvicorn==0.27.1
 pydantic==2.6.1
+pydantic-settings==2.1.0
 python-dotenv==1.0.1
 
-# Vector DB
+# Database & Vector Search
 qdrant-client==1.7.3
-
-# Free embeddings (MiniLM) — use [onnx] for CPU-only / lighter install
-sentence-transformers[onnx]>=3.0.0
-
-# APIs
-groq>=0.4.0
-httpx==0.24.1
-
-# DB
 pymongo==4.6.1
 
+# AI & Embeddings (Pinned to prevent backtracking)
+sentence-transformers[onnx]==3.0.1
+transformers==4.44.2
+tokenizers==0.19.1
+onnxruntime>=1.17.0
 
-numpy<2
-
-# Auth & Utilities
-pyjwt==2.8.0
+# APIs & Logic
+groq>=0.4.0
+httpx==0.26.0
 requests==2.31.0
+numpy<2.0.0
 
-# File Upload (voice-to-prompt)
+# Critical Compatibility Pins
+typing-extensions==4.10.0
+urllib3==2.2.1
+
+# Utilities
+pyjwt==2.8.0
 python-multipart

@@ -230,3 +230,55 @@ class MemoryService:
                 print(f"🗑️ Saved prompt vector deleted (id={mongo_id})")
         except Exception as e:
             print(f"⚠️ Could not delete saved prompt vector: {e}")
+
+    # =========================================================================
+    # PROMPT HISTORY (search saved prompts from MongoDB)
+    # =========================================================================
+
+    @staticmethod
+    def search_prompt_logs(user_id: str, query: str = "", limit: int = 20, skip: int = 0) -> list:
+        """
+        Search user's saved prompt logs in MongoDB.
+        If query is empty, returns all saved prompts sorted newest-first.
+        If query is provided, filters by substring match on 'original' field.
+        """
+        results = []
+
+        if MongoDB.prompts_col is not None:
+            try:
+                filter_doc = {"user_id": user_id}
+                if query and query.strip():
+                    filter_doc["original"] = {"$regex": query.strip(), "$options": "i"}
+
+                cursor = MongoDB.prompts_col.find(
+                    filter_doc
+                ).sort("timestamp", -1).skip(skip).limit(limit)
+
+                for doc in cursor:
+                    results.append({
+                        "id": str(doc.get("_id", "")),
+                        "original": doc.get("original", ""),
+                        "enhanced": doc.get("enhanced"),
+                        "timestamp": doc.get("timestamp").isoformat() if doc.get("timestamp") else None,
+                        "source": doc.get("source", "active"),
+                    })
+            except Exception as e:
+                print(f"⚠️ Error searching prompt logs: {e}")
+        else:
+            # In-memory fallback
+            user_logs = [log for log in in_memory_prompt_logs if log.get("user_id") == user_id]
+            if query and query.strip():
+                q = query.strip().lower()
+                user_logs = [log for log in user_logs if q in (log.get("original", "")).lower()]
+            user_logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            for log in user_logs[skip:skip + limit]:
+                results.append({
+                    "id": "memory",
+                    "original": log.get("original", ""),
+                    "enhanced": log.get("enhanced"),
+                    "timestamp": log.get("timestamp").isoformat() if hasattr(log.get("timestamp"), "isoformat") else str(log.get("timestamp", "")),
+                    "source": log.get("source", "active"),
+                })
+
+        return results
+
