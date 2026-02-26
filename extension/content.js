@@ -593,12 +593,18 @@ function showDiffModal(result) {
       <button class="pm-header-close pm-modal-close-btn">×</button>
     </div>
     <div class="pm-modal-body pm-diff-body">
-      <div class="pm-diff-section">
-        <div class="pm-diff-label">Original</div>
-        <div class="pm-diff-original">${escHtml(result.original)}</div>
+      <div class="pm-diff-section" id="pm-diff-original-section">
+        <div class="pm-diff-label-row">
+          <div class="pm-diff-label">Original</div>
+          <button class="pm-diff-edit-btn" id="pm-edit-original-btn">
+            <span class="pm-edit-icon">✏️</span>
+            <span class="pm-edit-text">Edit</span>
+          </button>
+        </div>
+        <div class="pm-diff-original" id="pm-diff-original-text">${escHtml(result.original)}</div>
       </div>
-      <div class="pm-diff-arrow">↓ enhanced in ${result.mode || currentMode} mode</div>
-      <div class="pm-diff-section">
+      <div class="pm-diff-arrow" id="pm-diff-arrow">↓ enhanced in ${result.mode || currentMode} mode</div>
+      <div class="pm-diff-section" id="pm-diff-enhanced-section">
         <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
         <div class="pm-diff-enhanced">${escHtml(result.enhanced)}</div>
       </div>
@@ -614,6 +620,46 @@ function showDiffModal(result) {
   overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
     b.addEventListener("click", closeModal)
   );
+
+  // Edit original prompt
+  document.getElementById("pm-edit-original-btn").addEventListener("click", () => {
+    const section = document.getElementById("pm-diff-original-section");
+    const originalTextEl = document.getElementById("pm-diff-original-text");
+    const editBtn = document.getElementById("pm-edit-original-btn");
+
+    // Replace read-only text with editable textarea
+    editBtn.style.display = "none";
+
+    // Update label
+    const label = section.querySelector(".pm-diff-label");
+    if (label) label.textContent = "Original (editing)";
+
+    originalTextEl.outerHTML = `
+      <textarea class="pm-diff-edit-textarea" id="pm-diff-edit-textarea">${escHtml(result.original)}</textarea>
+      <div class="pm-diff-edit-actions">
+        <button class="pm-cancel-edit-btn" id="pm-cancel-edit">Cancel</button>
+        <button class="pm-reenhance-btn" id="pm-reenhance-btn">Re-Enhance ↻</button>
+      </div>
+    `;
+
+    // Focus the textarea
+    const textarea = document.getElementById("pm-diff-edit-textarea");
+    if (textarea) {
+      textarea.focus();
+      textarea.selectionStart = textarea.value.length;
+    }
+
+    // Cancel editing — restore original view
+    document.getElementById("pm-cancel-edit").addEventListener("click", () => {
+      showDiffModal(result);
+    });
+
+    // Re-enhance with edited text
+    document.getElementById("pm-reenhance-btn").addEventListener("click", () => {
+      const editedText = document.getElementById("pm-diff-edit-textarea").value.trim();
+      handleReEnhance(editedText, result.original);
+    });
+  });
 
   // Use enhanced prompt
   document.getElementById("pm-use-enhanced").addEventListener("click", () => {
@@ -633,6 +679,58 @@ function showDiffModal(result) {
   });
 
   overlay.classList.add("pm-visible");
+}
+
+// Re-enhance with edited original prompt
+let reEnhanceCooldown = false;
+
+async function handleReEnhance(editedText, originalText) {
+  // Guardrail: empty or too short
+  if (!editedText || editedText.length < 3) {
+    showToast("Prompt too short — need at least 3 characters.", "error");
+    return;
+  }
+
+  // Guardrail: no actual change
+  if (editedText === originalText) {
+    showToast("No changes made — edit the text first.", "info");
+    return;
+  }
+
+  // Guardrail: cooldown
+  if (reEnhanceCooldown) {
+    showToast("Please wait a moment before re-enhancing.", "info");
+    return;
+  }
+
+  const btn = document.getElementById("pm-reenhance-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Enhancing...";
+  }
+
+  // Start cooldown
+  reEnhanceCooldown = true;
+  setTimeout(() => { reEnhanceCooldown = false; }, 2000);
+
+  showToast(`Re-enhancing in ${currentMode} mode...`, "info");
+
+  const newResult = await enhancePrompt(editedText, Array.from(selectedIds));
+
+  if (!newResult) {
+    showToast("Re-enhancement failed. Check connection.", "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Re-Enhance ↻";
+    }
+    return;
+  }
+
+  lastEnhanceResult = newResult;
+
+  // Re-render the diff modal with updated result
+  showDiffModal(newResult);
+  showToast("Prompt re-enhanced!", "success");
 }
 
 // ══════════════════════════════════════════════════════════════

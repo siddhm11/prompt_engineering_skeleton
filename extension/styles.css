@@ -630,6 +630,117 @@
     text-align: center;
 }
 
+/* ── Diff Edit / Re-Enhance ── */
+.pm-diff-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.pm-diff-label-row .pm-diff-label {
+    margin-bottom: 0;
+}
+
+.pm-diff-edit-btn {
+    border: none;
+    background: transparent;
+    color: var(--pm-text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color var(--pm-transition), background var(--pm-transition);
+    font-family: var(--pm-font);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.pm-diff-edit-btn:hover {
+    color: var(--pm-accent);
+    background: var(--pm-accent-light);
+}
+
+.pm-diff-edit-btn .pm-edit-icon {
+    font-size: 12px;
+}
+
+.pm-diff-edit-btn .pm-edit-text {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.pm-diff-edit-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: 12px 14px;
+    background: #faf5f0;
+    border: 2px solid var(--pm-accent);
+    border-radius: var(--pm-radius-sm);
+    font-family: var(--pm-font);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--pm-text);
+    resize: vertical;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color var(--pm-transition);
+}
+
+.pm-diff-edit-textarea:focus {
+    border-color: var(--pm-accent-hover);
+}
+
+.pm-diff-edit-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.pm-reenhance-btn {
+    flex: 1;
+    padding: 8px 14px;
+    background: var(--pm-accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--pm-radius-sm);
+    font-family: var(--pm-font);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--pm-transition), opacity var(--pm-transition);
+    letter-spacing: -0.01em;
+}
+
+.pm-reenhance-btn:hover:not(:disabled) {
+    background: var(--pm-accent-hover);
+}
+
+.pm-reenhance-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pm-cancel-edit-btn {
+    padding: 8px 14px;
+    background: var(--pm-bg-secondary);
+    color: var(--pm-text-secondary);
+    border: 1px solid var(--pm-border);
+    border-radius: var(--pm-radius-sm);
+    font-family: var(--pm-font);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--pm-transition);
+}
+
+.pm-cancel-edit-btn:hover {
+    background: var(--pm-bg-hover);
+}
+
 /* ── Toast Notifications ── */
 .pm-toast {
     position: fixed;
