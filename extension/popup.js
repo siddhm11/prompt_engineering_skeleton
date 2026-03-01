@@ -1,4 +1,4 @@
-const API_URL = "https://siddhm11-prompt-engine.hf.space";
+const API_URL = "http://localhost:8000";
 
 const step1 = document.getElementById("step-1");
 const step2 = document.getElementById("step-2");
@@ -18,22 +18,55 @@ const uuidDisplay = document.getElementById("uuid-display");
 
 const googleBtn = document.getElementById("google-login-btn");
 
-// 1. Check logged in state on load
-chrome.storage.local.get(["user_id", "email"], (result) => {
+// Token refresh helper
+function isTokenExpiringSoon(token, days = 2) {
+    try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        const expiresAt = payload.exp * 1000;
+        return expiresAt < Date.now() + days * 24 * 60 * 60 * 1000;
+    } catch {
+        return false;
+    }
+}
+
+async function tryRefreshToken(token) {
+    try {
+        const res = await fetch(`${API_URL}/auth/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token }),
+        });
+        if (res.ok) {
+            const data = await res.json();
+            chrome.storage.local.set({ token: data.token, email: data.email, user_id: data.user_id });
+            console.log("Popup: token auto-refreshed");
+            return true;
+        }
+    } catch (e) {
+        console.log("Popup: token refresh failed", e);
+    }
+    return false;
+}
+
+// 1. Check logged in state on load + auto-refresh
+chrome.storage.local.get(["user_id", "email", "token"], async (result) => {
     if (result.user_id && result.email) {
         showProfile(result.email, result.user_id);
+
+        // Auto-refresh token if expiring within 2 days
+        if (result.token && isTokenExpiringSoon(result.token, 2)) {
+            await tryRefreshToken(result.token);
+        }
     }
 });
 
 // Google Login
 googleBtn.addEventListener("click", () => {
-    // Open a popup window
     const width = 500;
     const height = 600;
     const left = (screen.width - width) / 2;
     const top = (screen.height - height) / 2;
 
-    // 1. Get URL from backend
     fetch(`${API_URL}/auth/google/login`)
         .then(res => res.json())
         .then(data => {
@@ -47,7 +80,6 @@ window.addEventListener("message", (event) => {
     if (event.data.type === "GOOGLE_AUTH_SUCCESS") {
         const { token, email, user_id } = event.data;
 
-        // Save to Storage
         chrome.storage.local.set({ user_id, email, token }, () => {
             statusText.innerText = "";
             showProfile(email, user_id);
@@ -75,10 +107,9 @@ sendOtpBtn.addEventListener("click", async () => {
 
         if (!res.ok) throw new Error("Failed to send code.");
 
-        // Show Step 2
         step1.classList.add("hidden");
         step2.classList.remove("hidden");
-        statusText.innerText = "Code sent! Check backend console.";
+        statusText.innerText = "Code sent! Check your email.";
         otpInput.focus();
 
     } catch (err) {
@@ -115,7 +146,6 @@ verifyOtpBtn.addEventListener("click", async () => {
 
         const data = await res.json();
 
-        // Save to Storage (Token!)
         chrome.storage.local.set({
             user_id: data.user_id,
             email: data.email,
@@ -141,7 +171,7 @@ backBtn.addEventListener("click", () => {
 
 // 4. Logout Logic
 logoutBtn.addEventListener("click", () => {
-    chrome.storage.local.remove(["user_id", "email"], () => {
+    chrome.storage.local.remove(["user_id", "email", "token"], () => {
         showLogin();
     });
 });

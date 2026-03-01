@@ -62,3 +62,6 @@ class FeedbackRequest(BaseModel):
     original: Optional[str] = None
     enhanced: Optional[str] = None
 
+class RefreshRequest(BaseModel):
+    """Token refresh — send current token to get a fresh one."""
+    token: str

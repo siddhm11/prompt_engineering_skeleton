@@ -32,11 +32,21 @@
             width: 28px;
             height: 28px;
             border-radius: 8px;
-            background: #e8f5f2;
+            background: linear-gradient(135deg, #e8f5f2 0%, #d0ede8 100%);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 14px;
+        }
+
+        .pm-logo-version {
+            font-size: 10px;
+            font-weight: 600;
+            color: #2a8a7a;
+            background: #e8f5f2;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: auto;
         }
 
         p {
@@ -76,12 +86,16 @@
             font-size: 13px;
             font-weight: 600;
             cursor: pointer;
-            transition: background 180ms ease, opacity 180ms ease;
+            transition: background 180ms ease, opacity 180ms ease, transform 120ms ease;
         }
 
         button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+        }
+
+        button:active:not(:disabled) {
+            transform: scale(0.97);
         }
 
         .btn-primary {
@@ -194,11 +208,12 @@
         .profile-tip {
             font-size: 12px;
             color: #6b6b76;
-            background: #e8f5f2;
-            padding: 8px 12px;
+            background: linear-gradient(135deg, #e8f5f2 0%, #f0faf8 100%);
+            padding: 10px 12px;
             border-radius: 6px;
             margin-bottom: 12px;
-            line-height: 1.5;
+            line-height: 1.6;
+            border: 1px solid #d0ede8;
         }
 
         .profile-tip kbd {
@@ -209,6 +224,31 @@
             font-size: 11px;
             font-family: inherit;
         }
+
+        .profile-shortcuts {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .shortcut-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #6b6b76;
+        }
+
+        .shortcut-row kbd {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid #d0d0d5;
+            font-size: 11px;
+            font-family: inherit;
+            color: #1a1a1e;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -217,6 +257,7 @@
     <div class="pm-logo">
         <div class="pm-logo-icon">⊕</div>
         Prompt Memory
+        <span class="pm-logo-version">v4</span>
     </div>
 
     <div id="login-section">
@@ -255,7 +296,17 @@
             <div class="profile-email" id="user-display"></div>
             <div class="profile-id" id="uuid-display"></div>
             <div class="profile-tip">
-                Use <kbd>Ctrl+Shift+E</kbd> on any AI chat to instantly enhance your prompt.
+                Open any AI chat (ChatGPT, Claude, Gemini, etc.) and use the shortcuts below:
+            </div>
+            <div class="profile-shortcuts">
+                <div class="shortcut-row">
+                    <span>Enhance prompt</span>
+                    <kbd>Ctrl+Shift+E</kbd>
+                </div>
+                <div class="shortcut-row">
+                    <span>Voice to prompt</span>
+                    <kbd>Ctrl+Shift+V</kbd>
+                </div>
             </div>
             <button class="btn-danger" id="logout-btn">Log Out</button>
         </div>

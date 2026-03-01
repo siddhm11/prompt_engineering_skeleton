@@ -35,3 +35,6 @@ requests==2.31.0
 
 # File Upload (voice-to-prompt)
 python-multipart
+
+# Rate Limiting
+slowapi>=0.1.9

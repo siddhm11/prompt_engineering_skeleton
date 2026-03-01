@@ -1,9 +1,10 @@
-// extension/content.js — Prompt Memory v3 (Revolutionary)
+// extension/content.js — Prompt Memory v4
 // One-click prompt engineering. Conversation-aware. Mode-aware. Platform-aware.
+// Streaming enhancement. History. Token auto-refresh. Multi-language voice.
 
-const API_URL = "https://siddhm11-prompt-engine.hf.space";
+const API_URL = "http://localhost:8000";
 
-console.log("Prompt Memory v3: loaded on", window.location.hostname);
+console.log("Prompt Memory v4: loaded on", window.location.hostname);
 
 // ══════════════════════════════════════════════════════════════
 // STATE
@@ -12,19 +13,20 @@ console.log("Prompt Memory v3: loaded on", window.location.hostname);
 let savedPrompts = [];
 let selectedIds = new Set();
 let panelOpen = false;
-let currentTab = "context"; // "context" | "save"
+let currentTab = "context"; // "context" | "save" | "history"
 let currentMode = "deep";   // "quick" | "deep" | "creative"
 let lastEnhanceResult = null;
 let searchQuery = "";
 let isRecording = false;
+let enhanceHistory = [];
 
 // ══════════════════════════════════════════════════════════════
-// AUTH HELPERS
+// AUTH HELPERS (with auto-refresh)
 // ══════════════════════════════════════════════════════════════
 
 function getAuth() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["user_id", "token"], (result) => {
+    chrome.storage.local.get(["user_id", "token", "email"], (result) => {
       resolve(result.token ? result : null);
     });
   });
@@ -39,12 +41,48 @@ function isTokenExpired(token) {
   }
 }
 
+function tokenExpiresWithinDays(token, days) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    const expiresAt = payload.exp * 1000;
+    const threshold = Date.now() + days * 24 * 60 * 60 * 1000;
+    return expiresAt < threshold;
+  } catch {
+    return true;
+  }
+}
+
+async function tryRefreshToken(auth) {
+  try {
+    const res = await fetch(`${API_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: auth.token }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      chrome.storage.local.set({ token: data.token, email: data.email, user_id: data.user_id });
+      console.log("Prompt Memory: token auto-refreshed");
+      return data.token;
+    }
+  } catch (e) {
+    console.log("Prompt Memory: token refresh failed", e);
+  }
+  return null;
+}
+
 async function authedFetch(url, options = {}) {
   const auth = await getAuth();
   if (!auth) return null;
 
-  // Check token expiry
-  if (isTokenExpired(auth.token)) {
+  // Auto-refresh if token expires within 2 days
+  let token = auth.token;
+  if (tokenExpiresWithinDays(token, 2) && !isTokenExpired(token)) {
+    const newToken = await tryRefreshToken(auth);
+    if (newToken) token = newToken;
+  }
+
+  if (isTokenExpired(token)) {
     showToast("Session expired — please re-login from the extension popup.", "error");
     return null;
   }
@@ -52,7 +90,7 @@ async function authedFetch(url, options = {}) {
   options.headers = {
     ...options.headers,
     "Content-Type": "application/json",
-    Authorization: `Bearer ${auth.token}`,
+    Authorization: `Bearer ${token}`,
   };
   try {
     const res = await fetch(url, options);
@@ -88,7 +126,14 @@ async function createSavedPrompt(content, title, tags) {
     method: "POST",
     body: JSON.stringify(body),
   });
-  return res && res.ok;
+  if (res && res.ok) {
+    const data = await res.json();
+    if (data.duplicate) {
+      showToast("This prompt is already saved.", "info");
+    }
+    return true;
+  }
+  return false;
 }
 
 async function updateSavedPrompt(id, fields) {
@@ -125,8 +170,66 @@ async function enhancePrompt(prompt, selectedPromptIds) {
   return null;
 }
 
+async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone) {
+  const auth = await getAuth();
+  if (!auth || isTokenExpired(auth.token)) return null;
+
+  const conversation = scrapeConversation();
+  const body = {
+    prompt,
+    platform: window.location.hostname,
+    mode: currentMode,
+    conversation_context: conversation,
+  };
+  if (selectedPromptIds && selectedPromptIds.length > 0) {
+    body.selected_prompt_ids = selectedPromptIds;
+  }
+
+  try {
+    const res = await fetch(`${API_URL}/enhance/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.token) {
+              onToken(data.token);
+            } else if (data.done) {
+              onDone(data);
+            } else if (data.error) {
+              console.error("Stream error:", data.error);
+            }
+          } catch (e) { }
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Streaming enhance error:", e);
+    return null;
+  }
+}
+
 async function sendFeedback(logId, rating, original, enhanced) {
-  authedFetch(`${API_URL}/enhance/feedback`, {
+  await authedFetch(`${API_URL}/enhance/feedback`, {
     method: "POST",
     body: JSON.stringify({ log_id: logId, rating, original, enhanced }),
   });
@@ -134,7 +237,7 @@ async function sendFeedback(logId, rating, original, enhanced) {
 
 async function trackPrompt(prompt) {
   const auth = await getAuth();
-  if (!auth || !prompt || prompt.trim().length <= 5) return;
+  if (!auth || isTokenExpired(auth.token)) return;
   authedFetch(`${API_URL}/track`, {
     method: "POST",
     body: JSON.stringify({
@@ -143,6 +246,15 @@ async function trackPrompt(prompt) {
       platform: window.location.hostname,
     }),
   });
+}
+
+async function fetchEnhanceHistory() {
+  const res = await authedFetch(`${API_URL}/enhance/history`);
+  if (res && res.ok) {
+    const data = await res.json();
+    enhanceHistory = data.history || [];
+  }
+  return enhanceHistory;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -156,7 +268,6 @@ function scrapeConversation() {
 
   try {
     if (hostname === "chatgpt.com") {
-      // ChatGPT: messages in [data-message-author-role]
       document.querySelectorAll("[data-message-author-role]").forEach((el) => {
         const role = el.getAttribute("data-message-author-role");
         const text = el.innerText?.trim();
@@ -165,7 +276,6 @@ function scrapeConversation() {
         }
       });
     } else if (hostname === "claude.ai") {
-      // Claude: user and assistant message containers
       document.querySelectorAll("[class*='Message'], [data-testid*='message']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
@@ -174,7 +284,6 @@ function scrapeConversation() {
         }
       });
     } else if (hostname === "gemini.google.com") {
-      // Gemini: message-content containers
       document.querySelectorAll("message-content, .model-response-text, .query-text").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
@@ -182,7 +291,6 @@ function scrapeConversation() {
         }
       });
     } else if (hostname === "grok.com" || hostname === "x.com") {
-      // Grok: message containers
       document.querySelectorAll("[class*='message'], [class*='Message'], [data-testid*='message'], [class*='response'], [class*='query']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
@@ -190,7 +298,6 @@ function scrapeConversation() {
         }
       });
     } else {
-      // Generic fallback: try common patterns
       document.querySelectorAll("[class*='message'], [class*='Message'], [role='presentation']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 5 && text.length < 2000) {
@@ -202,7 +309,6 @@ function scrapeConversation() {
     console.log("Prompt Memory: conversation scrape failed", e);
   }
 
-  // Return last 6 messages (context window)
   return messages.slice(-6);
 }
 
@@ -239,7 +345,7 @@ function setupKeyboardShortcut() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// UI: PANEL
+// UI: PANEL (3 tabs: Context, Save, History)
 // ══════════════════════════════════════════════════════════════
 
 function createPanel() {
@@ -252,18 +358,20 @@ function createPanel() {
   panel.innerHTML = `
     <div class="pm-header">
       <span class="pm-header-title">Prompt Memory</span>
+      <span class="pm-version-badge">v4</span>
       <button class="pm-header-close" id="pm-close">×</button>
     </div>
     <div class="pm-tabs">
       <button class="pm-tab pm-active" data-tab="context">Context</button>
       <button class="pm-tab" data-tab="save">Save</button>
+      <button class="pm-tab" data-tab="history">History</button>
     </div>
     <div class="pm-tab-content" id="pm-tab-body"></div>
     <div class="pm-enhance-section">
-      <div class="pm-mode-row">
-        <button class="pm-mode-btn" data-mode="quick" title="Short & sharp">⚡ Quick</button>
-        <button class="pm-mode-btn pm-mode-active" data-mode="deep" title="Full structured enhancement">🎯 Deep</button>
-        <button class="pm-mode-btn" data-mode="creative" title="Open-ended, exploratory">✨ Creative</button>
+      <div class="pm-mode-selector">
+        <button class="pm-mode-pill" data-mode="quick" title="Short & sharp">⚡ Quick</button>
+        <button class="pm-mode-pill pm-mode-pill-active" data-mode="deep" title="Full structured enhancement">🎯 Deep</button>
+        <button class="pm-mode-pill" data-mode="creative" title="Open-ended, exploratory">✨ Creative</button>
       </div>
       <div class="pm-enhance-row">
         <button class="pm-enhance-btn" id="pm-enhance-btn">Enhance Current Prompt</button>
@@ -288,12 +396,12 @@ function createPanel() {
     });
   });
 
-  // Mode buttons
-  panel.querySelectorAll(".pm-mode-btn").forEach((btn) => {
+  // Mode pills
+  panel.querySelectorAll(".pm-mode-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       currentMode = btn.dataset.mode;
-      panel.querySelectorAll(".pm-mode-btn").forEach((b) => b.classList.remove("pm-mode-active"));
-      btn.classList.add("pm-mode-active");
+      panel.querySelectorAll(".pm-mode-pill").forEach((b) => b.classList.remove("pm-mode-pill-active"));
+      btn.classList.add("pm-mode-pill-active");
     });
   });
 
@@ -315,7 +423,7 @@ function togglePanel(force) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// RENDER: CONTEXT TAB (with search + checkboxes)
+// RENDER: TAB CONTENT
 // ══════════════════════════════════════════════════════════════
 
 function renderTabContent() {
@@ -324,17 +432,22 @@ function renderTabContent() {
 
   if (currentTab === "context") {
     renderContextTab(body);
-  } else {
+  } else if (currentTab === "save") {
     renderSaveTab(body);
+  } else if (currentTab === "history") {
+    renderHistoryTab(body);
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// RENDER: CONTEXT TAB (with search + checkboxes)
+// ══════════════════════════════════════════════════════════════
 
 function renderContextTab(container) {
   let html = `<div class="pm-search-row">
     <input type="text" class="pm-search-input" id="pm-search" placeholder="Search saved prompts..." value="${escHtml(searchQuery)}" />
   </div>`;
 
-  // Filter prompts
   const filtered = savedPrompts.filter((p) => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -386,7 +499,6 @@ function renderContextTab(container) {
       </div>
     `;
 
-    // Checkbox toggle
     const checkbox = item.querySelector(".pm-checkbox");
     item.addEventListener("click", (e) => {
       if (e.target.closest(".pm-action-btn")) return;
@@ -401,19 +513,16 @@ function renderContextTab(container) {
       updateEnhanceHint();
     });
 
-    // View
     item.querySelector(".pm-view").addEventListener("click", (e) => {
       e.stopPropagation();
       showModal("Saved Prompt", p.content, [{ label: "Close", action: "close", style: "secondary" }]);
     });
 
-    // Edit
     item.querySelector(".pm-edit").addEventListener("click", (e) => {
       e.stopPropagation();
       showEditModal(p);
     });
 
-    // Delete
     item.querySelector(".pm-delete").addEventListener("click", (e) => {
       e.stopPropagation();
       showModal(
@@ -450,7 +559,6 @@ function _bindSearch(container) {
     input.addEventListener("input", (e) => {
       searchQuery = e.target.value;
       renderContextTab(container);
-      // Re-focus and restore cursor
       const newInput = container.querySelector("#pm-search");
       if (newInput) {
         newInput.focus();
@@ -529,7 +637,68 @@ function renderSaveTab(container) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// ENHANCE HANDLER
+// RENDER: HISTORY TAB
+// ══════════════════════════════════════════════════════════════
+
+function renderHistoryTab(container) {
+  container.innerHTML = `<div class="pm-prompts-empty">Loading history...</div>`;
+
+  fetchEnhanceHistory().then((history) => {
+    if (history.length === 0) {
+      container.innerHTML = `<div class="pm-prompts-empty">No enhancement history yet.<br>Enhance a prompt to see it here.</div>`;
+      return;
+    }
+
+    container.innerHTML = "";
+    history.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "pm-history-card";
+
+      const timeAgo = item.timestamp ? getTimeAgo(item.timestamp) : "";
+      const modeBadge = { quick: "⚡", deep: "🎯", creative: "✨" }[item.mode] || "🎯";
+
+      card.innerHTML = `
+        <div class="pm-history-header">
+          <span class="pm-history-mode">${modeBadge} ${item.mode || "deep"}</span>
+          <span class="pm-history-time">${timeAgo}</span>
+        </div>
+        <div class="pm-history-original">${escHtml(truncate(item.original, 120))}</div>
+        <div class="pm-history-arrow">↓</div>
+        <div class="pm-history-enhanced">${escHtml(truncate(item.enhanced, 150))}</div>
+        <div class="pm-history-footer">
+          <span class="pm-history-latency">${item.latency}s</span>
+          <button class="pm-action-btn pm-history-use" title="Use this prompt">↗</button>
+          <button class="pm-action-btn pm-history-copy" title="Copy enhanced">📋</button>
+        </div>
+      `;
+
+      card.querySelector(".pm-history-use").addEventListener("click", () => {
+        applyToInput(item.enhanced);
+        showToast("Prompt applied to input!", "success");
+      });
+
+      card.querySelector(".pm-history-copy").addEventListener("click", () => {
+        navigator.clipboard.writeText(item.enhanced);
+        showToast("Copied to clipboard!", "success");
+      });
+
+      container.appendChild(card);
+    });
+  });
+}
+
+function getTimeAgo(isoString) {
+  const date = new Date(isoString);
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return date.toLocaleDateString();
+}
+
+// ══════════════════════════════════════════════════════════════
+// ENHANCE HANDLER (streaming)
 // ══════════════════════════════════════════════════════════════
 
 async function handleEnhance() {
@@ -549,7 +718,6 @@ async function handleEnhance() {
     return;
   }
 
-  // Show enhancing state
   const btn = document.getElementById("pm-enhance-btn");
   if (btn) {
     btn.disabled = true;
@@ -557,21 +725,87 @@ async function handleEnhance() {
   }
   showToast(`Enhancing in ${currentMode} mode...`, "info");
 
-  const result = await enhancePrompt(inputText, Array.from(selectedIds));
+  // Use streaming enhancement
+  showStreamingDiffModal(inputText);
+
+  let enhancedParts = [];
+
+  await enhancePromptStream(
+    inputText,
+    Array.from(selectedIds),
+    // onToken
+    (token) => {
+      enhancedParts.push(token);
+      updateStreamingText(enhancedParts.join(""));
+    },
+    // onDone
+    (metadata) => {
+      const enhanced = enhancedParts.join("");
+      lastEnhanceResult = {
+        original: inputText,
+        enhanced: enhanced,
+        log_id: metadata.log_id,
+        latency: metadata.latency,
+        mode: metadata.mode,
+        context_used: metadata.context_used,
+      };
+      finalizeStreamingModal(lastEnhanceResult);
+    }
+  );
 
   if (btn) {
     btn.disabled = false;
     btn.textContent = "Enhance Current Prompt";
   }
+}
 
-  if (!result) {
-    showToast("Enhancement failed. Check connection.", "error");
-    return;
+// ══════════════════════════════════════════════════════════════
+// STREAMING DIFF MODAL — Shows tokens arriving in real-time
+// ══════════════════════════════════════════════════════════════
+
+function showStreamingDiffModal(originalText) {
+  const overlay = getOrCreateModalOverlay();
+  const modal = overlay.querySelector(".pm-modal");
+
+  modal.innerHTML = `
+    <div class="pm-modal-header">
+      <span class="pm-modal-title">Enhancing...</span>
+      <button class="pm-header-close pm-modal-close-btn">×</button>
+    </div>
+    <div class="pm-modal-body pm-diff-body">
+      <div class="pm-diff-section" id="pm-diff-original-section">
+        <div class="pm-diff-label-row">
+          <div class="pm-diff-label">Original</div>
+        </div>
+        <div class="pm-diff-original">${escHtml(originalText)}</div>
+      </div>
+      <div class="pm-diff-arrow">↓ enhancing in ${currentMode} mode...</div>
+      <div class="pm-diff-section">
+        <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
+        <div class="pm-diff-enhanced pm-streaming" id="pm-stream-target"><span class="pm-cursor">▊</span></div>
+      </div>
+    </div>
+    <div class="pm-modal-footer">
+      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Cancel</button>
+    </div>
+  `;
+
+  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
+    b.addEventListener("click", closeModal)
+  );
+
+  overlay.classList.add("pm-visible");
+}
+
+function updateStreamingText(text) {
+  const target = document.getElementById("pm-stream-target");
+  if (target) {
+    target.innerHTML = escHtml(text) + '<span class="pm-cursor">▊</span>';
   }
+}
 
-  lastEnhanceResult = result;
-
-  // Show diff-style preview modal
+function finalizeStreamingModal(result) {
+  // Re-render as the full diff modal with all buttons
   showDiffModal(result);
 }
 
@@ -584,7 +818,7 @@ function showDiffModal(result) {
   const modal = overlay.querySelector(".pm-modal");
 
   const contextLine = result.context_used
-    ? `${result.context_used.selected} selected · ${result.context_used.auto_matched} auto-matched · ${result.context_used.conversation_messages} conversation msgs`
+    ? `${result.context_used.selected} selected · ${result.context_used.auto_matched} auto-matched · ${result.context_used.passive_matched || 0} from history · ${result.context_used.conversation_messages} conversation msgs`
     : "";
 
   modal.innerHTML = `
@@ -612,6 +846,7 @@ function showDiffModal(result) {
     </div>
     <div class="pm-modal-footer">
       <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Discard</button>
+      <button class="pm-btn pm-btn-secondary" id="pm-copy-enhanced">Copy</button>
       <button class="pm-btn pm-btn-secondary" id="pm-save-enhanced">Save</button>
       <button class="pm-btn pm-btn-primary" id="pm-use-enhanced">Use This Prompt</button>
     </div>
@@ -627,10 +862,7 @@ function showDiffModal(result) {
     const originalTextEl = document.getElementById("pm-diff-original-text");
     const editBtn = document.getElementById("pm-edit-original-btn");
 
-    // Replace read-only text with editable textarea
     editBtn.style.display = "none";
-
-    // Update label
     const label = section.querySelector(".pm-diff-label");
     if (label) label.textContent = "Original (editing)";
 
@@ -642,23 +874,26 @@ function showDiffModal(result) {
       </div>
     `;
 
-    // Focus the textarea
     const textarea = document.getElementById("pm-diff-edit-textarea");
     if (textarea) {
       textarea.focus();
       textarea.selectionStart = textarea.value.length;
     }
 
-    // Cancel editing — restore original view
     document.getElementById("pm-cancel-edit").addEventListener("click", () => {
       showDiffModal(result);
     });
 
-    // Re-enhance with edited text
     document.getElementById("pm-reenhance-btn").addEventListener("click", () => {
       const editedText = document.getElementById("pm-diff-edit-textarea").value.trim();
       handleReEnhance(editedText, result.original);
     });
+  });
+
+  // Copy enhanced prompt
+  document.getElementById("pm-copy-enhanced").addEventListener("click", () => {
+    navigator.clipboard.writeText(result.enhanced);
+    showToast("Copied to clipboard!", "success");
   });
 
   // Use enhanced prompt
@@ -685,19 +920,14 @@ function showDiffModal(result) {
 let reEnhanceCooldown = false;
 
 async function handleReEnhance(editedText, originalText) {
-  // Guardrail: empty or too short
   if (!editedText || editedText.length < 3) {
     showToast("Prompt too short — need at least 3 characters.", "error");
     return;
   }
-
-  // Guardrail: no actual change
   if (editedText === originalText) {
     showToast("No changes made — edit the text first.", "info");
     return;
   }
-
-  // Guardrail: cooldown
   if (reEnhanceCooldown) {
     showToast("Please wait a moment before re-enhancing.", "info");
     return;
@@ -709,7 +939,6 @@ async function handleReEnhance(editedText, originalText) {
     btn.textContent = "Enhancing...";
   }
 
-  // Start cooldown
   reEnhanceCooldown = true;
   setTimeout(() => { reEnhanceCooldown = false; }, 2000);
 
@@ -727,8 +956,6 @@ async function handleReEnhance(editedText, originalText) {
   }
 
   lastEnhanceResult = newResult;
-
-  // Re-render the diff modal with updated result
   showDiffModal(newResult);
   showToast("Prompt re-enhanced!", "success");
 }
@@ -738,7 +965,6 @@ async function handleReEnhance(editedText, originalText) {
 // ══════════════════════════════════════════════════════════════
 
 function showFeedbackToast(result) {
-  // After applying the enhanced prompt, show a subtle feedback bar
   const existing = document.getElementById("pm-feedback-toast");
   if (existing) existing.remove();
 
@@ -752,11 +978,8 @@ function showFeedbackToast(result) {
   `;
 
   document.body.appendChild(toast);
-
-  // Auto-show
   requestAnimationFrame(() => toast.classList.add("pm-toast-visible"));
 
-  // Auto-dismiss after 8 seconds
   const autoDismiss = setTimeout(() => {
     toast.classList.remove("pm-toast-visible");
     setTimeout(() => toast.remove(), 300);
@@ -993,7 +1216,6 @@ function setupPassiveTracking() {
 
 // ══════════════════════════════════════════════════════════════
 // VOICE-TO-PROMPT ENGINE (MediaRecorder → Groq Whisper → LLM)
-// Record audio → Upload to backend → Whisper transcribes → LLM enhances
 // ══════════════════════════════════════════════════════════════
 
 let mediaRecorder = null;
@@ -1010,7 +1232,6 @@ function toggleVoice() {
 }
 
 async function startVoice() {
-  // Request mic access
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1027,7 +1248,6 @@ async function startVoice() {
   };
 
   mediaRecorder.onstop = async () => {
-    // Stop mic stream
     stream.getTracks().forEach((t) => t.stop());
     clearInterval(recordingTimer);
 
@@ -1040,21 +1260,16 @@ async function startVoice() {
     const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
     audioChunks = [];
 
-    // Update overlay to "processing" state
     updateVoiceOverlayState("processing");
-
-    // Send to backend
     await sendAudioToBackend(audioBlob);
   };
 
-  // Start recording
-  mediaRecorder.start(250); // collect chunks every 250ms
+  mediaRecorder.start(250);
   isRecording = true;
   recordingStartTime = Date.now();
   updateVoiceUI(true);
   showVoiceOverlay();
 
-  // Start timer display
   recordingTimer = setInterval(() => {
     const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
     const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
@@ -1107,7 +1322,10 @@ async function sendAudioToBackend(audioBlob) {
       return;
     }
 
-    // Show the diff modal with transcription + enhanced prompt
+    const langLabel = data.detected_language && data.detected_language !== "unknown"
+      ? ` · Language: ${data.detected_language}`
+      : "";
+
     lastEnhanceResult = {
       original: data.transcription || data.original,
       enhanced: data.enhanced,
@@ -1117,7 +1335,7 @@ async function sendAudioToBackend(audioBlob) {
       log_id: data.log_id,
     };
 
-    showToast(`Transcribed in ${data.transcription_time}s · Enhanced in ${data.total_time}s`, "success");
+    showToast(`Transcribed in ${data.transcription_time}s · Enhanced in ${data.total_time}s${langLabel}`, "success");
     showDiffModal(lastEnhanceResult);
   } catch (e) {
     hideVoiceOverlay();
@@ -1156,7 +1374,7 @@ function showVoiceOverlay() {
         <span class="pm-voice-label">Recording</span>
       </div>
       <div class="pm-voice-timer" id="pm-voice-timer">00:00</div>
-      <div class="pm-voice-hint">Speak naturally — Whisper AI will transcribe</div>
+      <div class="pm-voice-hint">Speak naturally — Whisper AI will transcribe & auto-detect language</div>
       <button class="pm-btn pm-btn-primary pm-voice-stop" id="pm-voice-stop">Stop & Enhance</button>
     </div>
   `;
@@ -1232,6 +1450,8 @@ async function init() {
   const auth = await getAuth();
   if (!auth) {
     console.log("Prompt Memory: not logged in, panel will prompt login.");
+  } else if (tokenExpiresWithinDays(auth.token, 2) && !isTokenExpired(auth.token)) {
+    tryRefreshToken(auth);
   }
 
   createTrigger();
