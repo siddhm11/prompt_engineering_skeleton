@@ -1,22 +1,6 @@
-
-from typing import List, Optional
 from pydantic import BaseModel
+from typing import Optional, List
 
-class UserProfile(BaseModel):
-    user_id: str
-    email: Optional[str] = None
-    tech_stack: List[str]  # e.g., ["React", "Python", "AWS"]
-    preferences: str       # e.g., "Clean code, no comments"
-
-class PromptRequest(BaseModel):
-    user_id: str
-    prompt: str
-    platform: Optional[str] = "unknown"
-
-class TrackRequest(BaseModel):
-    user_id: str
-    prompt: str
-    platform: Optional[str] = "unknown"
 
 class OTPRequest(BaseModel):
     email: str
@@ -25,22 +9,39 @@ class OTPVerify(BaseModel):
     email: str
     code: str
 
-# --- Saved Prompts ---
+class TokenRefreshRequest(BaseModel):
+    token: str
+
+class ProfileUpdate(BaseModel):
+    tech_stack: Optional[list] = None
+    preferences: Optional[str] = None
+
+class UserProfile(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    tech_stack: Optional[list] = None
+    preferences: Optional[str] = None
 
 class SavedPromptCreate(BaseModel):
-    """Create a saved prompt. Only content is required."""
     content: str
+    tags: Optional[list] = None
     title: Optional[str] = None
-    tags: Optional[List[str]] = None
-    platform: Optional[str] = None
 
 class SavedPromptUpdate(BaseModel):
-    """Update a saved prompt. All fields optional."""
     content: Optional[str] = None
+    tags: Optional[list] = None
     title: Optional[str] = None
-    tags: Optional[List[str]] = None
 
-# --- Enhanced Enhance Request ---
+class TrackRequest(BaseModel):
+    """Sent from the extension every time the user submits a prompt on any platform."""
+    user_id: str
+    prompt: str
+    platform: Optional[str] = None
+
+class MemorizeRequest(BaseModel):
+    """Manually save a prompt to memory (Qdrant)."""
+    user_id: str
+    prompt: str
 
 class EnhanceRequest(BaseModel):
     """
@@ -54,6 +55,7 @@ class EnhanceRequest(BaseModel):
     mode: Optional[str] = "deep"  # quick | deep | creative
     conversation_context: Optional[List[str]] = None
     selected_prompt_ids: Optional[List[str]] = None
+    source_language: Optional[str] = None  # ISO code from Whisper (e.g., "en", "hi")
 
 class FeedbackRequest(BaseModel):
     """Thumbs up/down on an enhanced prompt."""
@@ -63,5 +65,4 @@ class FeedbackRequest(BaseModel):
     enhanced: Optional[str] = None
 
 class RefreshRequest(BaseModel):
-    """Token refresh — send current token to get a fresh one."""
     token: str
