@@ -2,7 +2,7 @@
 import time
 import uuid
 import httpx
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse
 from ..models.schemas import OTPRequest, OTPVerify
 from ..core.config import settings
@@ -83,11 +83,13 @@ def verify_otp(request: OTPVerify):
 # --- GOOGLE OAUTH ---
 
 @router.get("/auth/google/login")
-def google_login():
+def google_login(request: Request):
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Server missing Google Client ID")
-        
-    redirect_uri = "https://siddhm11-prompt-engine.hf.space/auth/google/callback"
+
+    # Build redirect URI dynamically from the incoming request
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/auth/google/callback"
     scope = "openid email profile"
     auth_url = (
         f"https://accounts.google.com/o/oauth2/v2/auth?"
@@ -98,9 +100,12 @@ def google_login():
     return {"url": auth_url}
 
 @router.get("/auth/google/callback")
-async def google_callback(code: str):
+async def google_callback(code: str, request: Request):
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
          raise HTTPException(status_code=500, detail="Server missing Google Secrets")
+
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/auth/google/callback"
 
     token_url = "https://oauth2.googleapis.com/token"
     payload = {
@@ -108,7 +113,7 @@ async def google_callback(code: str):
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
         "code": code,
         "grant_type": "authorization_code",
-        "redirect_uri": "https://siddhm11-prompt-engine.hf.space/auth/google/callback"
+        "redirect_uri": redirect_uri
     }
     
     async with httpx.AsyncClient() as client:

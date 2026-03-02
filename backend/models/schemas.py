@@ -54,6 +54,7 @@ class EnhanceRequest(BaseModel):
     mode: Optional[str] = "deep"  # quick | deep | creative
     conversation_context: Optional[List[str]] = None
     selected_prompt_ids: Optional[List[str]] = None
+    selected_prompt_texts: Optional[List[str]] = None  # raw text of selected context prompts
     skip_similarity: Optional[bool] = False  # True = "Enhance Prompt" only, False = "Enhance + Auto-Context"
 
 class FeedbackRequest(BaseModel):

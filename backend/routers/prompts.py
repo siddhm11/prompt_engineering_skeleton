@@ -9,6 +9,7 @@ from ..core.security import verify_jwt
 from ..core.database import MongoDB, in_memory_users, in_memory_saved_prompts
 from ..services.memory_service import MemoryService
 from ..services.llm_service import get_groq_client
+from ..core.config import settings
 
 router = APIRouter()
 
@@ -79,10 +80,14 @@ PLATFORM_HINTS = {
 }
 
 OUTPUT_INSTRUCTION = """
-### OUTPUT
-- Return ONLY the refined prompt. No explanations, no commentary, no labels.
-- The refined prompt should feel like a natural, well-crafted message — not a rigid template.
-- Match the user's language (English, Hindi, etc.).
+### CRITICAL OUTPUT RULES
+- Return ONLY the refined/enhanced version of the user's prompt.
+- DO NOT answer or respond to the prompt.
+- DO NOT add explanations, labels, headers, or commentary.
+- DO NOT start with "Here's..." or "This is..."
+- The output must be a prompt that the user can copy and paste directly into an AI chat.
+- Match the user's language.
+- The refined prompt should feel natural and well-crafted — not a rigid template.
 """
 
 
@@ -142,13 +147,20 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
     
     # ── 3. USER-SELECTED SAVED PROMPTS ──
     selected_context_parts = []
-    selected_ids = request.selected_prompt_ids or []
-    
-    for pid in selected_ids:
-        doc = _fetch_saved_prompt(pid, user_id)
-        if doc:
-            label = doc.get("title") or "Saved Prompt"
-            selected_context_parts.append(f"[Selected by user] {label}: \"{doc['content']}\"")
+
+    # Prefer raw texts sent from the frontend (no DB lookup needed)
+    if request.selected_prompt_texts:
+        for i, txt in enumerate(request.selected_prompt_texts):
+            selected_context_parts.append(f'[Selected by user] Context #{i+1}: "{txt}"')
+    else:
+        # Fallback: look up by IDs in both collections
+        selected_ids = request.selected_prompt_ids or []
+        for pid in selected_ids:
+            doc = _fetch_prompt_by_id(pid, user_id)
+            if doc:
+                content = doc.get("original") or doc.get("content") or ""
+                if content:
+                    selected_context_parts.append(f'[Selected by user] Saved Prompt: "{content}"')
 
     # ── 4. SIMILARITY SEARCH ON SAVED PROMPTS (skip if skip_similarity=True) ──
     similar_saved = []
@@ -221,22 +233,13 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
 
     process_time = round(time.time() - start_time, 2) 
     
-    # ── 8. LOG ──
-    max_similarity = similar_saved[0]["score"] if similar_saved else 0.0
-    log_id = MemoryService.log_prompt(
-        user_id=user_id,
-        original=request.prompt,
-        enhanced=enhanced_prompt,
-        score=max_similarity,
-        latency=process_time,
-    )
-
-    # ── 9. MEMORIZE removed — user must explicitly save via /prompts/save ──
+    # ── 8. NO AUTO-SAVE — user must explicitly save via /prompts/save ──
+    # Respects privacy: nothing is stored unless the user chooses to save.
 
     return {
         "original": request.prompt,
         "enhanced": enhanced_prompt,
-        "log_id": log_id,
+        "log_id": "",
         "latency": process_time,
         "mode": mode,
         "context_used": {
@@ -267,6 +270,49 @@ def enhance_feedback(request: FeedbackRequest, user_id: str = Depends(verify_jwt
             print(f"⚠️ Feedback store error: {e}")
     
     return {"status": "recorded", "rating": request.rating}
+
+
+@router.post("/voice-transcribe")
+async def voice_transcribe(
+    audio: UploadFile = File(...),
+    user_id: str = Depends(verify_jwt),
+):
+    """
+    Voice-to-text only: transcribe audio with Groq Whisper REST API.
+    No LLM enhancement — user can then edit and choose their enhance mode.
+    """
+    import time as _time
+    import requests
+
+    start_time = _time.time()
+
+    audio_bytes = await audio.read()
+    if len(audio_bytes) < 100:
+        return {"error": "Audio too short. Please speak for at least a second."}
+
+    try:
+        # Use Groq REST API directly (avoids SDK version issues)
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+            files={"file": (audio.filename or "audio.webm", io.BytesIO(audio_bytes), "audio/webm")},
+            data={"model": "whisper-large-v3-turbo", "language": "en", "response_format": "text"},
+        )
+
+        if resp.status_code != 200:
+            print(f"❌ Groq Whisper API error: {resp.status_code} — {resp.text}")
+            return {"error": f"Transcription failed (HTTP {resp.status_code})"}
+
+        text = resp.text.strip()
+    except Exception as e:
+        print(f"❌ Whisper transcription error: {e}")
+        return {"error": f"Transcription failed: {str(e)}"}
+
+    if len(text) < 3:
+        return {"error": "Could not understand audio. Try speaking clearly."}
+
+    elapsed = round(_time.time() - start_time, 2)
+    return {"transcription": text, "time": elapsed}
 
 
 @router.post("/voice-enhance")
@@ -349,21 +395,32 @@ async def voice_enhance(
     }
 
 
-def _fetch_saved_prompt(prompt_id: str, user_id: str) -> dict:
-    """Helper to get a single saved prompt by ID, owned by user_id."""
-    if MongoDB.saved_prompts_col is not None:
+def _fetch_prompt_by_id(prompt_id: str, user_id: str) -> dict:
+    """Helper to get a prompt by ID — checks both prompt_logs and saved_prompts."""
+    if MongoDB.db is not None:
         try:
-            doc = MongoDB.saved_prompts_col.find_one(
+            # Try prompt_logs first (most common source for history)
+            doc = MongoDB.db["prompt_logs"].find_one(
                 {"_id": ObjectId(prompt_id), "user_id": user_id}
             )
-            return doc
+            if doc:
+                return doc
+        except Exception:
+            pass
+        try:
+            # Fallback to saved_prompts
+            if MongoDB.saved_prompts_col is not None:
+                doc = MongoDB.saved_prompts_col.find_one(
+                    {"_id": ObjectId(prompt_id), "user_id": user_id}
+                )
+                return doc
         except Exception:
             return None
     else:
         doc = in_memory_saved_prompts.get(prompt_id)
         if doc and doc.get("user_id") == user_id:
             return doc
-        return None
+    return None
 
 
 # ══════════════════════════════════════════════════════════════

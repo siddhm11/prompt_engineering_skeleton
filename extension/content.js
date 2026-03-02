@@ -1,7 +1,7 @@
 // extension/content.js — Prompt Memory v4 (Persistent Sidebar)
 // One-click prompt engineering. Conversation-aware. Mode-aware. Platform-aware.
 
-const API_URL = "https://siddhm11-prompt-engine.hf.space";
+const API_URL = "http://localhost:8000";
 
 console.log("Prompt Memory v4: loaded on", window.location.hostname);
 
@@ -94,7 +94,7 @@ async function fetchHistory(query = "") {
   return historyPrompts;
 }
 
-async function enhancePrompt(prompt, selectedPromptIds, skipSimilarity = true) {
+async function enhancePrompt(prompt, selectedPromptIds, selectedTexts, skipSimilarity = true) {
   const conversation = scrapeConversation();
   const body = {
     prompt,
@@ -105,6 +105,9 @@ async function enhancePrompt(prompt, selectedPromptIds, skipSimilarity = true) {
   };
   if (selectedPromptIds && selectedPromptIds.length > 0) {
     body.selected_prompt_ids = selectedPromptIds;
+  }
+  if (selectedTexts && selectedTexts.length > 0) {
+    body.selected_prompt_texts = selectedTexts;
   }
   const res = await authedFetch(`${API_URL}/enhance`, {
     method: "POST",
@@ -310,6 +313,7 @@ function createSidebar() {
   sidebar.className = "pm-sidebar";
 
   sidebar.innerHTML = `
+    <div class="pm-resize-handle" id="pm-resize-handle"></div>
     <div class="pm-sidebar-header">
       <span class="pm-sidebar-title">⊕ Prompt Memory</span>
       <button class="pm-sidebar-minimize" id="pm-minimize" title="Minimize">−</button>
@@ -319,7 +323,49 @@ function createSidebar() {
 
   document.body.appendChild(sidebar);
 
+  // Restore saved width
+  chrome.storage.local.get("pm_sidebar_width", (result) => {
+    if (result.pm_sidebar_width) {
+      sidebar.style.width = result.pm_sidebar_width + "px";
+    }
+  });
+
   document.getElementById("pm-minimize").addEventListener("click", () => toggleSidebar(false));
+
+  // Resize handle — drag left edge to resize
+  const handle = document.getElementById("pm-resize-handle");
+  let resizing = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizing = true;
+    startX = e.clientX;
+    startWidth = sidebar.offsetWidth;
+    handle.classList.add("pm-resizing");
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!resizing) return;
+    // Dragging left edge: moving left = wider, moving right = narrower
+    const diff = startX - e.clientX;
+    const newWidth = Math.min(600, Math.max(300, startWidth + diff));
+    sidebar.style.width = newWidth + "px";
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (!resizing) return;
+    resizing = false;
+    handle.classList.remove("pm-resizing");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    // Save width
+    chrome.storage.local.set({ pm_sidebar_width: sidebar.offsetWidth });
+  });
 }
 
 function toggleSidebar(force) {
@@ -352,24 +398,27 @@ async function renderSidebarContent() {
 function renderLoginView(container) {
   container.innerHTML = `
     <div class="pm-login-section">
-      <div class="pm-login-title">Sign In</div>
-      <p class="pm-login-desc">Log in to enhance your prompts with AI.</p>
+      <div class="pm-login-hero">
+        <div class="pm-login-icon">⊕</div>
+        <div class="pm-login-title">Prompt Memory</div>
+        <p class="pm-login-desc">Enhance your AI prompts with context, memory, and intelligence.</p>
+      </div>
 
       <div id="pm-login-step1">
         <input type="email" class="pm-input" id="pm-login-email" placeholder="you@example.com" />
-        <button class="pm-btn pm-btn-primary pm-full-width" id="pm-send-otp">Send Code</button>
+        <button class="pm-btn pm-btn-primary pm-full-width" id="pm-send-otp" style="margin-top:8px">Send Login Code</button>
         <div class="pm-divider"><span>or</span></div>
         <button class="pm-btn pm-btn-google pm-full-width" id="pm-google-login">
           <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-          Sign in with Google
+          Continue with Google
         </button>
       </div>
 
       <div id="pm-login-step2" class="pm-hidden">
-        <p class="pm-login-desc">Enter the 6-digit code from your email.</p>
-        <input type="text" class="pm-input" id="pm-login-otp" placeholder="123456" maxlength="6" />
-        <button class="pm-btn pm-btn-primary pm-full-width" id="pm-verify-otp">Verify & Login</button>
-        <button class="pm-link-btn" id="pm-back-email">← Back to email</button>
+        <p class="pm-login-desc">Enter the 6-digit code sent to your email.</p>
+        <input type="text" class="pm-input" id="pm-login-otp" placeholder="000000" maxlength="6" style="text-align:center;font-size:18px;letter-spacing:6px;font-weight:600" />
+        <button class="pm-btn pm-btn-primary pm-full-width" id="pm-verify-otp" style="margin-top:8px">Verify & Sign In</button>
+        <button class="pm-link-btn" id="pm-back-email">← Different email</button>
       </div>
 
       <div class="pm-login-status" id="pm-login-status"></div>
@@ -510,13 +559,18 @@ async function renderMainView(container, auth) {
 
       <!-- Action Buttons -->
       <div class="pm-action-buttons">
-        <button class="pm-btn pm-btn-primary pm-full-width" id="pm-enhance-only" title="Enhance just your prompt + selected context">Enhance Prompt</button>
-        <button class="pm-btn pm-btn-secondary pm-full-width" id="pm-enhance-context" title="Enhance with auto-matched similar prompts from your history">Enhance + Auto-Context</button>
+        <button class="pm-btn pm-btn-primary" id="pm-enhance-only" title="Enhance just your prompt + selected context">⚡ Enhance</button>
+        <button class="pm-btn pm-btn-secondary" id="pm-enhance-context" title="Enhance with auto-matched similar prompts from your history">🔗 + Auto-Context</button>
       </div>
 
       <!-- Voice -->
       <div class="pm-voice-row">
         <button class="pm-btn pm-btn-voice" id="pm-voice-btn" title="Voice to Prompt (Ctrl+Shift+V)">🎤 Voice to Prompt</button>
+      </div>
+
+      <!-- Save to History -->
+      <div class="pm-save-row">
+        <button class="pm-btn pm-btn-save pm-full-width" id="pm-save-direct" title="Save your current prompt to history for future context">💾 Save Prompt to History</button>
       </div>
 
       <!-- Context Count -->
@@ -556,6 +610,28 @@ async function renderMainView(container, auth) {
 
   // Voice
   document.getElementById("pm-voice-btn").addEventListener("click", toggleVoice);
+
+  // Save directly from sidebar
+  document.getElementById("pm-save-direct").addEventListener("click", async () => {
+    const promptInput = document.getElementById("pm-prompt-input");
+    const text = promptInput ? promptInput.value.trim() : "";
+    if (!text || text.length < 3) {
+      showToast("Type a prompt to save.", "error");
+      return;
+    }
+    const btn = document.getElementById("pm-save-direct");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    const ok = await savePromptExplicit(text);
+    if (ok) {
+      showToast("Prompt saved to history!", "success");
+      await loadAndRenderHistory();
+    } else {
+      showToast("Failed to save. Check connection.", "error");
+    }
+    btn.disabled = false;
+    btn.textContent = "💾 Save Prompt to History";
+  });
 
   // History search
   const searchInput = document.getElementById("pm-history-search");
@@ -599,9 +675,16 @@ async function loadAndRenderHistory() {
         <div class="pm-history-text">${escHtml(preview)}</div>
         <div class="pm-history-meta">${escHtml(timeStr)}</div>
       </div>
-      <div class="pm-history-tooltip">${escHtml(p.original)}</div>
       <div class="pm-history-select-badge">${isSelected ? "✓ Context" : "+ Add"}</div>
     `;
+
+    // Hover tooltip — positioned to the left via JS
+    card.addEventListener("mouseenter", () => {
+      showHistoryTooltip(card, p.original);
+    });
+    card.addEventListener("mouseleave", () => {
+      hideHistoryTooltip();
+    });
 
     // Click to toggle as context
     card.addEventListener("click", () => {
@@ -621,6 +704,44 @@ async function loadAndRenderHistory() {
 
     listEl.appendChild(card);
   });
+}
+
+// Floating tooltip helpers
+function showHistoryTooltip(card, text) {
+  hideHistoryTooltip();
+
+  const sidebar = document.getElementById("pm-sidebar");
+  if (!sidebar) return;
+
+  const tip = document.createElement("div");
+  tip.id = "pm-history-tooltip-float";
+  tip.className = "pm-history-tooltip-float";
+  tip.textContent = text;
+  document.body.appendChild(tip);
+
+  // Position: to the left of the sidebar, aligned with the card
+  const sidebarRect = sidebar.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const tipWidth = 300;
+  const leftPos = sidebarRect.left - tipWidth - 14;
+
+  // Vertical: align top of tooltip with top of card, clamped to viewport
+  let topPos = cardRect.top;
+  const tipHeight = tip.offsetHeight;
+  if (topPos + tipHeight > window.innerHeight - 10) {
+    topPos = window.innerHeight - tipHeight - 10;
+  }
+  if (topPos < 10) topPos = 10;
+
+  tip.style.left = Math.max(10, leftPos) + "px";
+  tip.style.top = topPos + "px";
+
+  requestAnimationFrame(() => tip.classList.add("pm-tooltip-visible"));
+}
+
+function hideHistoryTooltip() {
+  const existing = document.getElementById("pm-history-tooltip-float");
+  if (existing) existing.remove();
 }
 
 function updateContextHint() {
@@ -669,13 +790,14 @@ async function handleEnhance(skipSimilarity = true) {
 
   showToast(`Enhancing in ${currentMode} mode...`, "info");
 
-  // Build selected prompt IDs (from history context)
+  // Build selected prompt IDs + texts (from history context)
   const selectedIds = Array.from(selectedContextIds);
+  const selectedTexts = selectedIds.map(id => selectedContextTexts[id]).filter(Boolean);
 
-  const result = await enhancePrompt(inputText, selectedIds, skipSimilarity);
+  const result = await enhancePrompt(inputText, selectedIds, selectedTexts, skipSimilarity);
 
   // Re-enable buttons
-  if (btn1) { btn1.disabled = false; btn1.textContent = "Enhance Prompt"; }
+  if (btn1) { btn1.disabled = false; btn1.textContent = "⚡ Enhance"; }
   if (btn2) { btn2.disabled = false; }
 
   if (!result) {
@@ -837,13 +959,10 @@ function closeModal() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// VOICE-TO-PROMPT ENGINE
+// VOICE-TO-PROMPT (Browser Speech Recognition — no backend)
 // ══════════════════════════════════════════════════════════════
 
-let mediaRecorder = null;
-let audioChunks = [];
-let recordingStartTime = 0;
-let recordingTimer = null;
+let speechRecognition = null;
 
 function toggleVoice() {
   if (isRecording) {
@@ -853,182 +972,79 @@ function toggleVoice() {
   }
 }
 
-async function startVoice() {
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    showToast("Microphone access denied.", "error");
+function startVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    showToast("Speech recognition not supported in this browser.", "error");
     return;
   }
 
-  audioChunks = [];
-  mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+  speechRecognition = new SpeechRecognition();
+  speechRecognition.continuous = true;
+  speechRecognition.interimResults = true;
+  speechRecognition.lang = "en-US";
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) audioChunks.push(e.data);
-  };
+  let finalTranscript = "";
+  const promptInput = document.getElementById("pm-prompt-input");
+  const existingText = promptInput ? promptInput.value.trim() : "";
 
-  mediaRecorder.onstop = async () => {
-    stream.getTracks().forEach((t) => t.stop());
-    clearInterval(recordingTimer);
-
-    if (audioChunks.length === 0) {
-      cleanupVoice();
-      showToast("No audio recorded.", "error");
-      return;
+  speechRecognition.onresult = (event) => {
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript + " ";
+      } else {
+        interim = transcript;
+      }
     }
-
-    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-    audioChunks = [];
-    updateVoiceOverlayState("processing");
-    await sendAudioToBackend(audioBlob);
+    // Show live transcription in textarea
+    if (promptInput) {
+      const prefix = existingText ? existingText + " " : "";
+      promptInput.value = prefix + finalTranscript + interim;
+    }
   };
 
-  mediaRecorder.start(250);
+  speechRecognition.onerror = (event) => {
+    console.error("Speech recognition error:", event.error);
+    if (event.error === "not-allowed") {
+      showToast("Microphone access denied.", "error");
+    } else {
+      showToast(`Voice error: ${event.error}`, "error");
+    }
+    stopVoice();
+  };
+
+  speechRecognition.onend = () => {
+    // Auto-stop UI when recognition ends
+    isRecording = false;
+    updateVoiceUI(false);
+    if (finalTranscript.trim()) {
+      showToast("Voice captured — edit and enhance!", "success");
+    }
+  };
+
+  speechRecognition.start();
   isRecording = true;
-  recordingStartTime = Date.now();
   updateVoiceUI(true);
-  showVoiceOverlay();
-
-  recordingTimer = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
-    const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const secs = String(elapsed % 60).padStart(2, "0");
-    const timerEl = document.getElementById("pm-voice-timer");
-    if (timerEl) timerEl.textContent = `${mins}:${secs}`;
-  }, 1000);
-
-  showToast("🎤 Recording... speak your prompt", "info");
+  showToast("🎤 Listening... speak your prompt", "info");
 }
 
 function stopVoice() {
-  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  if (speechRecognition) {
+    speechRecognition.stop();
+    speechRecognition = null;
+  }
   isRecording = false;
   updateVoiceUI(false);
-  try { mediaRecorder.stop(); } catch (e) { }
-}
-
-async function sendAudioToBackend(audioBlob) {
-  const auth = await getAuth();
-  if (!auth || isTokenExpired(auth.token)) {
-    hideVoiceOverlay();
-    showToast("Please log in first.", "error");
-    return;
-  }
-
-  const conversationCtx = scrapeConversation();
-
-  const formData = new FormData();
-  formData.append("audio", audioBlob, "recording.webm");
-  formData.append("mode", currentMode);
-  formData.append("platform", window.location.hostname);
-  formData.append("conversation_context", JSON.stringify(conversationCtx));
-  formData.append("selected_prompt_ids", JSON.stringify(Array.from(selectedContextIds)));
-
-  try {
-    const resp = await fetch(`${API_URL}/voice-enhance`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${auth.token}` },
-      body: formData,
-    });
-    const data = await resp.json();
-
-    hideVoiceOverlay();
-
-    if (data.error) {
-      showToast(data.error, "error");
-      return;
-    }
-
-    lastEnhanceResult = {
-      original: data.transcription || data.original,
-      enhanced: data.enhanced,
-      mode: data.mode,
-      latency: data.total_time,
-      context_used: data.context_used,
-      log_id: data.log_id,
-    };
-
-    showToast(`Transcribed in ${data.transcription_time}s · Enhanced in ${data.total_time}s`, "success");
-    showDiffModal(lastEnhanceResult);
-  } catch (e) {
-    hideVoiceOverlay();
-    console.error("Voice enhance error:", e);
-    showToast("Voice enhance failed. Check connection.", "error");
-  }
-}
-
-function cleanupVoice() {
-  isRecording = false;
-  mediaRecorder = null;
-  audioChunks = [];
-  clearInterval(recordingTimer);
-  updateVoiceUI(false);
-  hideVoiceOverlay();
-}
-
-function showVoiceOverlay() {
-  let overlay = document.getElementById("pm-voice-overlay");
-  if (!overlay) {
-    overlay = document.createElement("div");
-    overlay.id = "pm-voice-overlay";
-    overlay.className = "pm-voice-overlay";
-    document.body.appendChild(overlay);
-  }
-
-  overlay.innerHTML = `
-    <div class="pm-voice-card">
-      <div class="pm-voice-indicator">
-        <div class="pm-voice-bars">
-          <span class="pm-bar"></span><span class="pm-bar"></span><span class="pm-bar"></span>
-          <span class="pm-bar"></span><span class="pm-bar"></span>
-        </div>
-        <span class="pm-voice-label">Recording</span>
-      </div>
-      <div class="pm-voice-timer" id="pm-voice-timer">00:00</div>
-      <div class="pm-voice-hint">Speak naturally — Whisper AI will transcribe</div>
-      <button class="pm-btn pm-btn-primary pm-voice-stop" id="pm-voice-stop">Stop & Enhance</button>
-    </div>
-  `;
-
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) stopVoice();
-  });
-  document.getElementById("pm-voice-stop").addEventListener("click", stopVoice);
-
-  requestAnimationFrame(() => overlay.classList.add("pm-visible"));
-}
-
-function updateVoiceOverlayState(state) {
-  const card = document.querySelector(".pm-voice-card");
-  if (!card) return;
-
-  if (state === "processing") {
-    card.innerHTML = `
-      <div class="pm-voice-indicator">
-        <div class="pm-voice-spinner"></div>
-        <span class="pm-voice-label">Transcribing & enhancing...</span>
-      </div>
-      <div class="pm-voice-hint">Whisper AI is processing your audio</div>
-    `;
-  }
-}
-
-function hideVoiceOverlay() {
-  const overlay = document.getElementById("pm-voice-overlay");
-  if (overlay) {
-    overlay.classList.remove("pm-visible");
-    setTimeout(() => overlay.remove(), 300);
-  }
 }
 
 function updateVoiceUI(recording) {
   const btn = document.getElementById("pm-voice-btn");
   if (btn) {
     btn.classList.toggle("pm-recording", recording);
-    btn.innerHTML = recording ? "⏹ Stop Recording" : "🎤 Voice to Prompt";
-    btn.title = recording ? "Stop recording" : "Voice to Prompt (Ctrl+Shift+V)";
+    btn.innerHTML = recording ? "⏹ Stop Listening" : "🎤 Voice to Prompt";
+    btn.title = recording ? "Stop listening" : "Voice to Prompt";
   }
 }
 
