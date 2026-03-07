@@ -23,7 +23,7 @@ class Settings:
     ALGORITHM = "HS256"
     
     # Constants
-    EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     COLLECTION_NAME = "prompt_memory"
 
     # Rate Limiting

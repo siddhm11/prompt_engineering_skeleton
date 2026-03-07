@@ -167,5 +167,5 @@ def _encode_text(text: str):
 # LRU cache: avoids re-encoding the same prompt text multiple times
 @lru_cache(maxsize=256)
 def get_embedding(text: str):
-    """Converts text to 384-dim vector using MiniLM. Cached for repeated calls."""
+    """Converts text to 384-dim vector using multilingual MiniLM-L12. Cached for repeated calls."""
     return _encode_text(text)
