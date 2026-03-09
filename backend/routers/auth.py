@@ -20,8 +20,8 @@ _oauth_state_store = {}  # CSRF protection for OAuth
 def request_otp(request: OTPRequest):
     email = request.email.strip().lower()
     
-    # ── DEMO BYPASS: ok@gmail.com gets instant login ──
-    if email == "ok@gmail.com":
+    # ── DEMO BYPASS: ok@gmail.com gets instant login (DEV ONLY) ──
+    if email == "ok@gmail.com" and not settings.is_production:
         _otp_store[email] = {"code": "000000", "expires": time.time() + 9999}
         print(f"\n🔓 [DEMO] Bypass login for {email} — code: 000000\n")
         return {"message": "OTP sent."}

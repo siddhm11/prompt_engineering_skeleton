@@ -55,7 +55,7 @@ class MemoryService:
                 max_score = hit.score
 
             payload = hit.payload
-            if hit.score > 0.25:
+            if hit.score > 0.45:
                 context_str += f"- Past Prompt: \"{payload.get('original_prompt')}\"\n"
                 context_str += f"- Refined Version: \"{payload.get('refined_prompt')}\"\n\n"
                 
@@ -93,7 +93,7 @@ class MemoryService:
 
         matched = []
         for hit in results:
-            if hit.score < 0.30:
+            if hit.score < 0.50:
                 continue
             matched.append({
                 "original": hit.payload.get("original_prompt", ""),
@@ -258,7 +258,7 @@ class MemoryService:
             mongo_id = hit.payload.get("mongo_id", "")
             if mongo_id in exclude_set:
                 continue
-            if hit.score < 0.20:
+            if hit.score < 0.40:
                 continue
             matched.append({
                 "mongo_id": mongo_id,

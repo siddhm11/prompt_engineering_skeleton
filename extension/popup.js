@@ -1,4 +1,6 @@
-const API_URL = "http://localhost:8000";
+// Default API URL — overridden by chrome.storage.local['api_url']
+const DEFAULT_API_URL = "http://localhost:8000";
+let API_URL = DEFAULT_API_URL;
 
 const step1 = document.getElementById("step-1");
 const step2 = document.getElementById("step-2");
@@ -15,8 +17,24 @@ const loginSection = document.getElementById("login-section");
 const profileSection = document.getElementById("profile-section");
 const userDisplay = document.getElementById("user-display");
 const uuidDisplay = document.getElementById("uuid-display");
+const serverDisplay = document.getElementById("server-display");
+const serverStatus = document.getElementById("server-status");
 
 const googleBtn = document.getElementById("google-login-btn");
+
+// Load API URL from storage first, then check login state
+chrome.storage.local.get(["user_id", "email", "token", "api_url"], async (result) => {
+    if (result.api_url) API_URL = result.api_url;
+
+    if (result.user_id && result.email) {
+        showProfile(result.email, result.user_id);
+
+        // Auto-refresh token if expiring within 2 days
+        if (result.token && isTokenExpiringSoon(result.token, 2)) {
+            await tryRefreshToken(result.token);
+        }
+    }
+});
 
 // Token refresh helper
 function isTokenExpiringSoon(token, days = 2) {
@@ -48,17 +66,23 @@ async function tryRefreshToken(token) {
     return false;
 }
 
-// 1. Check logged in state on load + auto-refresh
-chrome.storage.local.get(["user_id", "email", "token"], async (result) => {
-    if (result.user_id && result.email) {
-        showProfile(result.email, result.user_id);
-
-        // Auto-refresh token if expiring within 2 days
-        if (result.token && isTokenExpiringSoon(result.token, 2)) {
-            await tryRefreshToken(result.token);
+// Server health check
+async function checkServerHealth() {
+    if (!serverStatus) return;
+    try {
+        const res = await fetch(`${API_URL}/`, { method: "GET" });
+        if (res.ok) {
+            serverStatus.textContent = "● Connected";
+            serverStatus.className = "server-status connected";
+        } else {
+            serverStatus.textContent = "● Error";
+            serverStatus.className = "server-status error";
         }
+    } catch {
+        serverStatus.textContent = "● Offline";
+        serverStatus.className = "server-status offline";
     }
-});
+}
 
 // Google Login
 googleBtn.addEventListener("click", () => {
@@ -182,6 +206,11 @@ function showProfile(email, uuid) {
     profileSection.classList.remove("hidden");
     userDisplay.innerText = email;
     uuidDisplay.innerText = uuid;
+
+    // Show server info
+    const urlLabel = API_URL.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    if (serverDisplay) serverDisplay.innerText = urlLabel;
+    checkServerHealth();
 }
 
 // Helper: Show Login UI
@@ -195,3 +224,4 @@ function showLogin() {
     otpInput.value = "";
     statusText.innerText = "";
 }
+

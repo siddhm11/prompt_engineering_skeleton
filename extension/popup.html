@@ -249,6 +249,36 @@
             font-family: inherit;
             color: #1a1a1e;
         }
+
+        .server-info {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #9d9da8;
+            margin-bottom: 10px;
+            justify-content: center;
+        }
+
+        .server-label {
+            color: #6b6b76;
+        }
+
+        .server-status {
+            font-size: 10px;
+        }
+
+        .server-status.connected {
+            color: #27ae60;
+        }
+
+        .server-status.offline {
+            color: #c0392b;
+        }
+
+        .server-status.error {
+            color: #e67e22;
+        }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
@@ -295,6 +325,11 @@
         <div class="profile-card">
             <div class="profile-email" id="user-display"></div>
             <div class="profile-id" id="uuid-display"></div>
+            <div class="server-info">
+                <span class="server-label">Server:</span>
+                <span id="server-display">localhost:8000</span>
+                <span id="server-status" class="server-status">● Checking...</span>
+            </div>
             <div class="profile-tip">
                 Open any AI chat (ChatGPT, Claude, Gemini, etc.) and use the shortcuts below:
             </div>

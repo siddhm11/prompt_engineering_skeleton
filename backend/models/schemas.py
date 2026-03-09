@@ -26,6 +26,7 @@ class SavedPromptCreate(BaseModel):
     content: str
     tags: Optional[list] = None
     title: Optional[str] = None
+    platform: Optional[str] = None
 
 class SavedPromptUpdate(BaseModel):
     content: Optional[str] = None

@@ -2,7 +2,19 @@
 // One-click prompt engineering. Conversation-aware. Mode-aware. Platform-aware.
 // Streaming enhancement. History. Token auto-refresh. Multi-language voice.
 
-const API_URL = "http://localhost:8000";
+// Default API URL — overridden by chrome.storage.local['api_url'] (set via popup)
+const DEFAULT_API_URL = "http://localhost:8000";
+let API_URL = DEFAULT_API_URL;
+
+// Load configured API URL from storage on startup
+chrome.storage.local.get("api_url", (result) => {
+  if (result.api_url) API_URL = result.api_url;
+});
+
+// Listen for URL changes from popup
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.api_url) API_URL = changes.api_url.newValue || DEFAULT_API_URL;
+});
 
 console.log("Prompt Memory v4: loaded on", window.location.hostname);
 
@@ -19,6 +31,8 @@ let lastEnhanceResult = null;
 let searchQuery = "";
 let isRecording = false;
 let enhanceHistory = [];
+let usageData = { count: 0, limit: 30 };
+let isLoadingTab = false;
 
 // ══════════════════════════════════════════════════════════════
 // AUTH HELPERS (with auto-refresh)
@@ -101,6 +115,11 @@ async function authedFetch(url, options = {}) {
     return res;
   } catch (err) {
     console.error("Prompt Memory fetch error:", err);
+    if (err.name === "TypeError" && err.message.includes("Failed to fetch")) {
+      showToast("Server unavailable — check your connection or try again later.", "error");
+    } else {
+      showToast("Network error — please try again.", "error");
+    }
     return null;
   }
 }
@@ -325,6 +344,11 @@ function createTrigger() {
   btn.title = "Prompt Memory (Ctrl+Shift+E to enhance)";
   btn.addEventListener("click", () => togglePanel());
   document.body.appendChild(btn);
+
+  // Apply saved theme to trigger
+  chrome.storage.local.get("pm_theme", (result) => {
+    btn.setAttribute("data-pm-theme", result.pm_theme || "dark");
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -356,9 +380,11 @@ function createPanel() {
   panel.className = "pm-panel";
 
   panel.innerHTML = `
+    <div class="pm-resize-handle" id="pm-resize-handle"></div>
     <div class="pm-header">
       <span class="pm-header-title">Prompt Memory</span>
       <span class="pm-version-badge">v4</span>
+      <button class="pm-theme-toggle" id="pm-theme-toggle" title="Toggle light/dark mode">🌙</button>
       <button class="pm-header-close" id="pm-close">×</button>
     </div>
     <div class="pm-tabs">
@@ -368,6 +394,10 @@ function createPanel() {
     </div>
     <div class="pm-tab-content" id="pm-tab-body"></div>
     <div class="pm-enhance-section">
+      <div class="pm-usage-bar" id="pm-usage-bar" style="display:none">
+        <div class="pm-usage-track"><div class="pm-usage-fill" id="pm-usage-fill" style="width:0%"></div></div>
+        <span class="pm-usage-label" id="pm-usage-label"></span>
+      </div>
       <div class="pm-mode-selector">
         <button class="pm-mode-pill" data-mode="quick" title="Short & sharp">⚡ Quick</button>
         <button class="pm-mode-pill pm-mode-pill-active" data-mode="deep" title="Full structured enhancement">🎯 Deep</button>
@@ -383,8 +413,24 @@ function createPanel() {
 
   document.body.appendChild(panel);
 
+  // Restore saved width + theme
+  chrome.storage.local.get(["pm_panel_width", "pm_theme"], (result) => {
+    if (result.pm_panel_width) {
+      panel.style.width = result.pm_panel_width + "px";
+    }
+    applyTheme(result.pm_theme || "dark");
+  });
+
   // Close
   document.getElementById("pm-close").addEventListener("click", () => togglePanel(false));
+
+  // Theme toggle
+  document.getElementById("pm-theme-toggle").addEventListener("click", () => {
+    const current = panel.getAttribute("data-pm-theme") || "dark";
+    const next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    chrome.storage.local.set({ pm_theme: next });
+  });
 
   // Tabs
   panel.querySelectorAll(".pm-tab").forEach((tab) => {
@@ -410,6 +456,37 @@ function createPanel() {
 
   // Voice
   document.getElementById("pm-voice-btn").addEventListener("click", toggleVoice);
+
+  // Resize handle — drag left edge
+  const handle = document.getElementById("pm-resize-handle");
+  let resizing = false, startX = 0, startWidth = 0;
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizing = true;
+    startX = e.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add("pm-resizing");
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!resizing) return;
+    const diff = startX - e.clientX;
+    const newWidth = Math.min(600, Math.max(320, startWidth + diff));
+    panel.style.width = newWidth + "px";
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (!resizing) return;
+    resizing = false;
+    handle.classList.remove("pm-resizing");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    chrome.storage.local.set({ pm_panel_width: panel.offsetWidth });
+  });
 }
 
 function togglePanel(force) {
@@ -418,8 +495,134 @@ function togglePanel(force) {
   panelOpen = force !== undefined ? force : !panelOpen;
   panel.classList.toggle("pm-open", panelOpen);
   if (panelOpen) {
-    fetchSavedPrompts().then(() => renderTabContent());
+    // If already logged in, skip onboarding and mark as onboarded
+    chrome.storage.local.get(["pm_onboarded", "token"], (result) => {
+      if (result.token || result.pm_onboarded) {
+        // Auto-mark as onboarded if logged in
+        if (!result.pm_onboarded) {
+          chrome.storage.local.set({ pm_onboarded: true });
+        }
+        // Remove any leftover onboarding overlays
+        panel.querySelectorAll(".pm-onboarding").forEach((el) => el.remove());
+        showSkeletonAndLoad();
+      } else {
+        showOnboarding(panel);
+      }
+    });
   }
+}
+
+function showSkeletonAndLoad() {
+  const body = document.getElementById("pm-tab-body");
+  if (body) {
+    body.innerHTML = renderSkeleton(3);
+    isLoadingTab = true;
+  }
+  fetchSavedPrompts().then(() => {
+    isLoadingTab = false;
+    renderTabContent();
+  });
+  fetchUsage();
+}
+
+// ══════════════════════════════════════════════════════════════
+// ONBOARDING OVERLAY (first-time users)
+// ══════════════════════════════════════════════════════════════
+
+function showOnboarding(panel) {
+  // Remove any existing onboarding overlay to prevent stacking
+  panel.querySelectorAll(".pm-onboarding").forEach((el) => el.remove());
+
+  const overlay = document.createElement("div");
+  overlay.className = "pm-onboarding";
+  overlay.innerHTML = `
+    <div class="pm-onboarding-logo">✨</div>
+    <div class="pm-onboarding-title">Welcome to Prompt Memory</div>
+    <div class="pm-onboarding-subtitle">Your AI prompt engineering assistant</div>
+    <div class="pm-onboarding-steps">
+      <div class="pm-onboarding-step">
+        <div class="pm-onboarding-icon">✍️</div>
+        <div class="pm-onboarding-step-text">
+          <div class="pm-onboarding-step-title">Write your prompt</div>
+          <div class="pm-onboarding-step-desc">Type your prompt in any AI chat as usual</div>
+        </div>
+      </div>
+      <div class="pm-onboarding-step">
+        <div class="pm-onboarding-icon">🎯</div>
+        <div class="pm-onboarding-step-text">
+          <div class="pm-onboarding-step-title">Hit Enhance</div>
+          <div class="pm-onboarding-step-desc">Press Ctrl+Shift+E or click Enhance — we'll rewrite it to get better AI responses</div>
+        </div>
+      </div>
+      <div class="pm-onboarding-step">
+        <div class="pm-onboarding-icon">💾</div>
+        <div class="pm-onboarding-step-text">
+          <div class="pm-onboarding-step-title">Save & reuse</div>
+          <div class="pm-onboarding-step-desc">Save great prompts to your library. Select them as context for future enhancements</div>
+        </div>
+      </div>
+    </div>
+    <button class="pm-onboarding-cta" id="pm-onboarding-start">Get Started</button>
+  `;
+  panel.appendChild(overlay);
+
+  document.getElementById("pm-onboarding-start").addEventListener("click", () => {
+    chrome.storage.local.set({ pm_onboarded: true });
+    overlay.style.animation = "pm-fadeIn 0.3s ease reverse";
+    setTimeout(() => {
+      overlay.remove();
+      showSkeletonAndLoad();
+    }, 280);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// SKELETON LOADERS
+// ══════════════════════════════════════════════════════════════
+
+function renderSkeleton(count = 3) {
+  let items = "";
+  for (let i = 0; i < count; i++) {
+    items += `
+      <div class="pm-skeleton-item">
+        <div class="pm-skeleton-checkbox"></div>
+        <div class="pm-skeleton-body">
+          <div class="pm-skeleton-line"></div>
+          <div class="pm-skeleton-line"></div>
+          <div class="pm-skeleton-line"></div>
+        </div>
+      </div>`;
+  }
+  return `<div class="pm-skeleton">${items}</div>`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// USAGE COUNTER
+// ══════════════════════════════════════════════════════════════
+
+async function fetchUsage() {
+  try {
+    const res = await authedFetch(`${API_URL}/enhance/usage`);
+    if (!res) return;
+    const data = await res.json();
+    usageData = { count: data.count || 0, limit: data.limit || 30 };
+    updateUsageBar();
+  } catch (e) {
+    console.log("Prompt Memory: usage fetch skipped", e);
+  }
+}
+
+function updateUsageBar() {
+  const bar = document.getElementById("pm-usage-bar");
+  const fill = document.getElementById("pm-usage-fill");
+  const label = document.getElementById("pm-usage-label");
+  if (!bar || !fill || !label) return;
+
+  const pct = Math.min(100, Math.round((usageData.count / usageData.limit) * 100));
+  bar.style.display = "flex";
+  fill.style.width = pct + "%";
+  fill.className = pct >= 80 ? "pm-usage-fill pm-usage-warn" : "pm-usage-fill";
+  label.textContent = `${usageData.count}/${usageData.limit} today`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -750,6 +953,9 @@ async function handleEnhance() {
         context_used: metadata.context_used,
       };
       finalizeStreamingModal(lastEnhanceResult);
+      // Increment local usage counter
+      usageData.count++;
+      updateUsageBar();
     }
   );
 
@@ -1440,6 +1646,19 @@ function setStatus(id, msg, type) {
   if (!el) return;
   el.textContent = msg;
   el.className = `pm-status${type === "success" ? " pm-status-success" : type === "error" ? " pm-status-error" : ""}`;
+}
+
+function applyTheme(theme) {
+  const els = [
+    document.getElementById("pm-panel"),
+    document.getElementById("pm-trigger"),
+    document.querySelector(".pm-modal-overlay"),
+    document.querySelector(".pm-voice-overlay"),
+  ].filter(Boolean);
+  els.forEach((el) => el.setAttribute("data-pm-theme", theme));
+
+  const toggleBtn = document.getElementById("pm-theme-toggle");
+  if (toggleBtn) toggleBtn.textContent = theme === "dark" ? "☀️" : "🌙";
 }
 
 // ══════════════════════════════════════════════════════════════

@@ -3,18 +3,12 @@ import time as _time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
+
+from .core.config import settings
 from .core.database import MongoDB
 from .routers import auth, users, prompts, saved_prompts
 
-# Rate limiter (shared across routers)
-limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI(title="Context-Aware Prompt Engine")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── REQUEST LOGGING MIDDLEWARE ──
 # Prints every request to the terminal so you can see what's being hit
@@ -44,10 +38,10 @@ async def log_requests(request: Request, call_next):
         print(f"{'='*60}")
         raise
 
-# CORS
+# CORS — environment-aware (dev: allow all, prod: whitelist only)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,6 +50,9 @@ app.add_middleware(
 # Startup Events
 @app.on_event("startup")
 def startup_db_client():
+    # Safety checks (blocks startup if JWT_SECRET is default in production)
+    settings.validate()
+
     MongoDB.connect()
     # Pre-load embedding model to eliminate first-request cold start
     try:
@@ -64,8 +61,12 @@ def startup_db_client():
     except Exception as e:
         print(f"⚠️ Embedding preload skipped: {e}")
 
+    env_label = "🔧 DEVELOPMENT" if not settings.is_production else "🚀 PRODUCTION"
+    cors_label = "* (all origins)" if not settings.is_production else ", ".join(settings.cors_origins) or "(none configured!)"
     print(f"\n{'='*60}")
     print(f"🚀 Prompt Memory v4.0 — Server Ready!")
+    print(f"   Environment: {env_label}")
+    print(f"   CORS Origins: {cors_label}")
     print(f"   http://localhost:8000")
     print(f"   Docs: http://localhost:8000/docs")
     print(f"{'='*60}\n")
