@@ -297,6 +297,21 @@ function scrapeConversation() {
           messages.push(`[message]: ${text.substring(0, 500)}`);
         }
       });
+    } else if (hostname === "manus.im") {
+      // User messages: span.u-break-words inside chat bubbles
+      document.querySelectorAll("span.u-break-words.whitespace-pre-wrap").forEach((el) => {
+        const text = el.innerText?.trim();
+        if (text && text.length > 2) {
+          messages.push(`[user]: ${text.substring(0, 500)}`);
+        }
+      });
+      // AI messages: div.manus-markdown
+      document.querySelectorAll(".manus-markdown").forEach((el) => {
+        const text = el.innerText?.trim();
+        if (text && text.length > 2) {
+          messages.push(`[assistant]: ${text.substring(0, 500)}`);
+        }
+      });
     } else {
       document.querySelectorAll("[class*='message'], [class*='Message'], [role='presentation']").forEach((el) => {
         const text = el.innerText?.trim();
@@ -1141,6 +1156,14 @@ function closeModal() {
 // ══════════════════════════════════════════════════════════════
 
 function getCurrentInputText() {
+  // Manus AI: ProseMirror editor
+  if (window.location.hostname === "manus.im") {
+    const pm = document.querySelector(".tiptap.ProseMirror");
+    if (pm && pm.offsetParent !== null) {
+      return pm.innerText?.replace(/\n$/, "") || "";
+    }
+  }
+
   const selectors = [
     "#prompt-textarea",
     "[contenteditable='true']",
@@ -1156,6 +1179,29 @@ function getCurrentInputText() {
 }
 
 function applyToInput(text) {
+  // Manus AI: ProseMirror/Tiptap editor needs special handling
+  if (window.location.hostname === "manus.im") {
+    const pm = document.querySelector(".tiptap.ProseMirror");
+    if (pm && pm.offsetParent !== null) {
+      pm.focus();
+      // Select all existing content
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(pm);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      // Use execCommand to insert text — this updates ProseMirror's internal state
+      document.execCommand("insertText", false, text);
+      // Fallback: if execCommand didn't work, set innerHTML directly
+      if (!pm.innerText?.trim()) {
+        const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        pm.innerHTML = `<p>${escaped.replace(/\n/g, "</p><p>")}</p>`;
+        pm.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+      }
+      return;
+    }
+  }
+
   const selectors = [
     "#prompt-textarea",
     "[contenteditable='true']",

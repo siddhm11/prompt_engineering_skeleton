@@ -38,7 +38,8 @@
         "https://claude.ai/*",
         "https://www.perplexity.ai/*",
         "https://grok.com/*",
-        "https://x.com/i/grok*"
+        "https://x.com/i/grok*",
+        "https://manus.im/*"
       ],
       "js": [
         "content.js"
