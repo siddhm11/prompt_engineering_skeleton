@@ -30,9 +30,9 @@ class MemoryService:
             return "No relevant past context found.", 0.0
 
         try:
-            results = qdrant.search(
+            results = qdrant.query_points(
                 collection_name=settings.COLLECTION_NAME,
-                query_vector=query_vector,
+                query=query_vector,
                 query_filter=Filter(
                     must=[
                         FieldCondition(
@@ -42,7 +42,7 @@ class MemoryService:
                     ]
                 ),
                 limit=limit
-            )
+            ).points
         except Exception as e:
             print(f"⚠️ Search failed: {e}")
             return "No relevant past context found.", 0.0
@@ -77,16 +77,16 @@ class MemoryService:
             return []
 
         try:
-            results = qdrant.search(
+            results = qdrant.query_points(
                 collection_name=settings.COLLECTION_NAME,
-                query_vector=query_vector,
+                query=query_vector,
                 query_filter=Filter(
                     must=[
                         FieldCondition(key="user_id", match=MatchValue(value=user_id))
                     ]
                 ),
                 limit=limit
-            )
+            ).points
         except Exception as e:
             print(f"⚠️ Passive context search failed: {e}")
             return []
@@ -238,16 +238,16 @@ class MemoryService:
             return []
 
         try:
-            results = qdrant.search(
+            results = qdrant.query_points(
                 collection_name=QdrantDB.SAVED_COLLECTION,
-                query_vector=query_vector,
+                query=query_vector,
                 query_filter=Filter(
                     must=[
                         FieldCondition(key="user_id", match=MatchValue(value=user_id))
                     ]
                 ),
                 limit=limit + (len(exclude_ids) if exclude_ids else 0),
-            )
+            ).points
         except Exception as e:
             print(f"⚠️ Saved prompts search failed: {e}")
             return []
