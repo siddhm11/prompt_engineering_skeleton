@@ -3,7 +3,8 @@
 // Streaming enhancement. History. Token auto-refresh. Multi-language voice.
 
 // Default API URL — overridden by chrome.storage.local['api_url'] (set via popup)
-const DEFAULT_API_URL = "http://localhost:8000";
+// const DEFAULT_API_URL = "https://siddhm11-prompt-engine.hf.space";  // ← production
+const DEFAULT_API_URL = "http://localhost:8000";  // ← local testing
 let API_URL = DEFAULT_API_URL;
 
 // Load configured API URL from storage on startup
@@ -25,7 +26,7 @@ console.log("Prompt Memory v4: loaded on", window.location.hostname);
 let savedPrompts = [];
 let selectedIds = new Set();
 let panelOpen = false;
-let currentTab = "context"; // "context" | "save" | "history"
+let currentTab = "context"; // "context" | "save" | "history" | "feedback"
 let currentMode = "deep";   // "quick" | "deep" | "creative"
 let lastEnhanceResult = null;
 let searchQuery = "";
@@ -391,6 +392,7 @@ function createPanel() {
       <button class="pm-tab pm-active" data-tab="context">Context</button>
       <button class="pm-tab" data-tab="save">Save</button>
       <button class="pm-tab" data-tab="history">History</button>
+      <button class="pm-tab" data-tab="feedback" title="Send Feedback">💬</button>
     </div>
     <div class="pm-tab-content" id="pm-tab-body"></div>
     <div class="pm-enhance-section">
@@ -639,6 +641,8 @@ function renderTabContent() {
     renderSaveTab(body);
   } else if (currentTab === "history") {
     renderHistoryTab(body);
+  } else if (currentTab === "feedback") {
+    renderFeedbackTab(body);
   }
 }
 
@@ -898,6 +902,136 @@ function getTimeAgo(isoString) {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
   return date.toLocaleDateString();
+}
+
+// ══════════════════════════════════════════════════════════════
+// RENDER: FEEDBACK TAB
+// ══════════════════════════════════════════════════════════════
+
+function renderFeedbackTab(container) {
+  // Pre-fill email from chrome.storage
+  chrome.storage.local.get(["email"], (result) => {
+    const userEmail = result.email || "";
+
+    container.innerHTML = `
+      <div class="pm-save-form">
+        <div class="pm-feedback-header">
+          <div class="pm-feedback-icon">💬</div>
+          <div class="pm-feedback-title">Send Feedback</div>
+          <div class="pm-feedback-subtitle">Bug reports, feature requests, or general feedback</div>
+        </div>
+        <div class="pm-field">
+          <label class="pm-label">Type</label>
+          <select class="pm-input pm-select" id="pm-feedback-type">
+            <option value="bug">🐛 Bug Report</option>
+            <option value="feature">💡 Feature Request</option>
+            <option value="general" selected>💬 General Feedback</option>
+          </select>
+        </div>
+        <div class="pm-field">
+          <label class="pm-label">Message</label>
+          <textarea class="pm-textarea" id="pm-feedback-message" rows="4" placeholder="Describe the issue, suggestion, or feedback..."></textarea>
+        </div>
+        <div class="pm-field">
+          <label class="pm-label">Email <span style="color:var(--pm-text-muted)">(for follow-ups)</span></label>
+          <input class="pm-input" id="pm-feedback-email" type="email" value="${escHtml(userEmail)}" placeholder="your@email.com" />
+        </div>
+        <div class="pm-btn-row">
+          <button class="pm-btn pm-btn-primary" id="pm-feedback-submit" style="flex:1">Submit Feedback</button>
+        </div>
+        <div class="pm-status" id="pm-feedback-status"></div>
+        <div class="pm-feedback-recent" id="pm-feedback-recent"></div>
+      </div>
+    `;
+
+    // Submit handler
+    document.getElementById("pm-feedback-submit").addEventListener("click", async () => {
+      const type = document.getElementById("pm-feedback-type").value;
+      const message = document.getElementById("pm-feedback-message").value.trim();
+      const email = document.getElementById("pm-feedback-email").value.trim();
+
+      if (!message || message.length < 5) {
+        setStatus("pm-feedback-status", "Please write at least a few words.", "error");
+        return;
+      }
+
+      const btn = document.getElementById("pm-feedback-submit");
+      btn.disabled = true;
+      btn.textContent = "Sending...";
+
+      const ok = await submitFeedback(type, message, email);
+      if (ok) {
+        setStatus("pm-feedback-status", "Thank you! Your feedback has been received. ✓", "success");
+        document.getElementById("pm-feedback-message").value = "";
+        // Refresh the recent list
+        loadRecentFeedback();
+      } else {
+        setStatus("pm-feedback-status", "Failed to send. Check your login status.", "error");
+      }
+      btn.disabled = false;
+      btn.textContent = "Submit Feedback";
+    });
+
+    // Load recent feedback
+    loadRecentFeedback();
+  });
+}
+
+async function submitFeedback(type, message, email) {
+  const body = {
+    type,
+    message,
+    email: email || undefined,
+    source: "extension",
+    page_url: window.location.href,
+    browser_info: `${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || "Chrome"}, ${navigator.platform}`,
+  };
+  const res = await authedFetch(`${API_URL}/feedback`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return res && res.ok;
+}
+
+async function fetchMyFeedback() {
+  const res = await authedFetch(`${API_URL}/feedback/mine`);
+  if (res && res.ok) {
+    const data = await res.json();
+    return data.feedback || [];
+  }
+  return [];
+}
+
+function loadRecentFeedback() {
+  const recentContainer = document.getElementById("pm-feedback-recent");
+  if (!recentContainer) return;
+
+  recentContainer.innerHTML = `<div class="pm-prompts-empty" style="padding:8px 0;font-size:11px;">Loading recent...</div>`;
+
+  fetchMyFeedback().then((items) => {
+    if (items.length === 0) {
+      recentContainer.innerHTML = "";
+      return;
+    }
+
+    const typeIcons = { bug: "🐛", feature: "💡", general: "💬" };
+    const statusIcons = { new: "📨", reviewed: "👀", resolved: "✅" };
+
+    let html = `<div class="pm-feedback-recent-title">Recent Feedback</div>`;
+    items.slice(0, 3).forEach((item) => {
+      const icon = typeIcons[item.type] || "💬";
+      const statusIcon = statusIcons[item.status] || "📨";
+      const time = item.timestamp ? getTimeAgo(item.timestamp) : "";
+      html += `
+        <div class="pm-feedback-recent-item">
+          <span class="pm-feedback-recent-icon">${icon}</span>
+          <span class="pm-feedback-recent-msg">${escHtml(item.message)}</span>
+          <span class="pm-feedback-recent-meta">${statusIcon} ${time}</span>
+        </div>
+      `;
+    });
+    recentContainer.innerHTML = html;
+  });
 }
 
 // ══════════════════════════════════════════════════════════════

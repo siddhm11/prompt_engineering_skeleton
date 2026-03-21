@@ -1,17 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
 
-
-class OTPRequest(BaseModel):
-    email: str
-
-class OTPVerify(BaseModel):
-    email: str
-    code: str
-
-class TokenRefreshRequest(BaseModel):
-    token: str
-
 class ProfileUpdate(BaseModel):
     tech_stack: Optional[list] = None
     preferences: Optional[str] = None
@@ -67,3 +56,12 @@ class FeedbackRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     token: str
+
+class UserFeedbackRequest(BaseModel):
+    """General user feedback / bug report (not prompt-level feedback)."""
+    type: str  # "bug" | "feature" | "general"
+    message: str
+    email: Optional[str] = None
+    source: Optional[str] = "extension"  # "extension" | "website"
+    page_url: Optional[str] = None
+    browser_info: Optional[str] = None
