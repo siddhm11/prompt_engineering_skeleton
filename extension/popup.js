@@ -94,6 +94,158 @@ logoutBtn.addEventListener("click", () => {
     });
 });
 
+// ════════════════════════════════════════════════════════════════
+// BYOK — the user's own free API key
+// ════════════════════════════════════════════════════════════════
+//
+// Kept in chrome.storage.local, deliberately NOT chrome.storage.sync: sync
+// replicates through the user's Google account to every browser they are
+// signed into, which is not somewhere an API key should travel silently.
+//
+// The key is read here and by the service worker. The content script — which
+// runs alongside chatgpt.com and claude.ai — never receives it.
+
+const PROVIDER_INFO = {
+    groq: {
+        label: "Groq",
+        keysUrl: "https://console.groq.com/keys",
+        privacy: "Your prompts go straight from your browser to Groq. Groq does not train on API inputs.",
+        models: [
+            ["qwen/qwen3.8-27b", "Qwen 3.8 27B — fastest, best Hinglish"],
+            ["qwen/qwen3.6-27b", "Qwen 3.6 27B"],
+            ["openai/gpt-oss-120b", "GPT-OSS 120B — strongest English"],
+            ["openai/gpt-oss-20b", "GPT-OSS 20B"],
+        ],
+    },
+    gemini: {
+        label: "Google Gemini",
+        keysUrl: "https://aistudio.google.com/apikey",
+        // Stated up front rather than buried: Google's own pricing table marks
+        // free-tier data "Used to improve our products: Yes" (paid tier: "No").
+        privacy: "Free, but Google may use free-tier prompts to improve their products. Groq does not.",
+        models: [
+            ["gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite — fastest"],
+            ["gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite"],
+            ["gemini-3.5-flash", "Gemini 3.5 Flash"],
+        ],
+    },
+    openrouter: {
+        label: "OpenRouter",
+        keysUrl: "https://openrouter.ai/keys",
+        privacy: "Data policy depends on the upstream provider you route to.",
+        models: [["", "Type a model id below"]],
+    },
+};
+
+const providerSel = document.getElementById("key-provider");
+const modelSel = document.getElementById("key-model");
+const keyInput = document.getElementById("key-input");
+const keyStatus = document.getElementById("key-status");
+const keyPill = document.getElementById("key-pill");
+const keyLink = document.getElementById("key-get-link");
+const keyPrivacy = document.getElementById("key-privacy");
+
+function renderProvider(providerId, selectedModel) {
+    const info = PROVIDER_INFO[providerId] || PROVIDER_INFO.groq;
+    keyLink.href = info.keysUrl;
+    keyLink.textContent = `Get a free ${info.label} key →`;
+    keyPrivacy.textContent = info.privacy;
+
+    modelSel.innerHTML = "";
+    for (const [id, label] of info.models) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = label;
+        modelSel.appendChild(opt);
+    }
+    if (selectedModel && info.models.some(([id]) => id === selectedModel)) {
+        modelSel.value = selectedModel;
+    }
+}
+
+function setKeyStatus(text, kind) {
+    keyStatus.textContent = text || "";
+    keyStatus.className = `key-status ${kind || ""}`;
+}
+
+function setPill(connected, providerLabel) {
+    keyPill.textContent = connected ? `${providerLabel} connected` : "Not set";
+    keyPill.className = `key-pill ${connected ? "on" : "off"}`;
+}
+
+chrome.storage.local.get(["byok_provider", "byok_key", "byok_model"], (r) => {
+    const provider = r.byok_provider || "groq";
+    providerSel.value = provider;
+    renderProvider(provider, r.byok_model);
+    if (r.byok_key) {
+        // Never re-display the stored secret. Show a length-accurate mask so it
+        // is obvious something is saved without putting the key back on screen.
+        keyInput.value = "";
+        keyInput.placeholder = `Saved — ${"•".repeat(12)}${r.byok_key.slice(-4)}`;
+        setPill(true, (PROVIDER_INFO[provider] || {}).label || provider);
+    }
+});
+
+providerSel.addEventListener("change", () => {
+    renderProvider(providerSel.value);
+    setKeyStatus("", "");
+});
+
+document.getElementById("key-save").addEventListener("click", async () => {
+    const provider = providerSel.value;
+    const key = keyInput.value.trim();
+    const model = modelSel.value;
+
+    if (!key) {
+        setKeyStatus("Paste your key first.", "err");
+        return;
+    }
+
+    const btn = document.getElementById("key-save");
+    btn.disabled = true;
+    setKeyStatus("Testing your key…", "busy");
+
+    // The service worker owns validation so the key is exercised in the same
+    // context that will later use it.
+    chrome.runtime.sendMessage({ type: "PM_VALIDATE_KEY", provider, key }, (res) => {
+        btn.disabled = false;
+
+        if (chrome.runtime.lastError || !res) {
+            setKeyStatus("Could not reach the extension worker. Try reloading the extension.", "err");
+            return;
+        }
+        if (!res.ok) {
+            setKeyStatus(res.detail || "That key did not work.", "err");
+            return;
+        }
+
+        chrome.storage.local.set(
+            { byok_provider: provider, byok_key: key, byok_model: model },
+            () => {
+                const label = (PROVIDER_INFO[provider] || {}).label || provider;
+                setPill(true, label);
+                setKeyStatus(`${res.detail} You now get your own free allowance.`, "ok");
+                keyInput.value = "";
+                keyInput.placeholder = `Saved — ${"•".repeat(12)}${key.slice(-4)}`;
+            }
+        );
+    });
+});
+
+document.getElementById("key-clear").addEventListener("click", () => {
+    chrome.storage.local.remove(["byok_provider", "byok_key", "byok_model"], () => {
+        keyInput.value = "";
+        keyInput.placeholder = "Paste your key here";
+        setPill(false);
+        setKeyStatus("Key removed from this browser.", "");
+    });
+});
+
+// Opened from the post-install tab: focus the one field that matters.
+if (new URLSearchParams(location.search).get("onboarding")) {
+    keyInput.focus();
+}
+
 // ── UI Helpers ──
 function showProfile(email) {
     loginSection.classList.add("hidden");

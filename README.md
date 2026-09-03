@@ -60,7 +60,8 @@ prompt_engineering_skeleton/
 │   │   └── users.py         # User profile endpoints
 │   │
 │   ├── services/
-│   │   ├── llm_service.py   # Groq API + sentence-transformer embeddings
+│   │   ├── providers.py     # Provider-agnostic LLM chain + failover
+│   │   ├── llm_service.py   # Whisper client + sentence-transformer embeddings
 │   │   ├── memory_service.py# Semantic retrieval, logging & memorization
 │   │   └── email_service.py # SendGrid OTP delivery
 │   │
@@ -105,7 +106,16 @@ Create or edit `backend/.env` with your credentials:
 
 ```env
 # ── LLM ──
+# Only GROQ_API_KEY is required. The others add server-side fallback providers;
+# users who bring their own key need none of these set.
 GROQ_API_KEY=your_groq_api_key
+GROQ_API_KEY_2=optional_second_key_for_rotation
+# GEMINI_API_KEY=
+# OPENROUTER_API_KEY=
+
+# Model selection lives in backend/services/providers.py as an ordered fallback
+# chain — do NOT pin a single model id here. Set this only to force one:
+# MODEL_OVERRIDE=
 
 # ── Databases ──
 MONGO_URI= make one on your own 
@@ -150,13 +160,24 @@ The API will be live at **http://localhost:8000**. Hit `/` to verify:
 
 ---
 
-### 3 · Login & Start Using
+### 3 · Start Using
 
 1. Click the **⊕ Prompt Memory** icon in your toolbar
-2. Sign in with **Google** or enter your email for a one-time code
+2. **Add your own free API key** (recommended) — grab one at
+   [console.groq.com/keys](https://console.groq.com/keys), paste it in, hit
+   *Save & test*. No credit card, no account here, and you get **1,000
+   enhancements a day** instead of the 15 available on the shared key.
+   *Or* sign in with Google to use the shared key plus saved prompts and history.
 3. Navigate to any supported AI platform — a floating **⊕** button appears
 4. Type a prompt, then click **Enhance** or press `Ctrl+Shift+E`
 5. Review the before/after diff → accept, edit, or dismiss
+
+> **Why bring your own key?** Groq's free tier is 1,000 requests/day and 8,000
+> tokens/minute *per account*. Because every user shares this project's single
+> server key, that ceiling is spent by everyone at once — roughly 4 enhancements
+> per minute for the entire user base. With your own key the same free allowance
+> is yours alone, and with no sign-in your prompts go straight from your browser
+> to the provider without touching this server at all.
 
 ---
 
@@ -227,8 +248,8 @@ The API will be live at **http://localhost:8000**. Hit `/` to verify:
 |---|---|
 | **Extension** | Chrome Manifest V3, Vanilla JS, CSS |
 | **Backend** | FastAPI, Uvicorn |
-| **LLM** | Groq API (Llama / Mixtral) |
-| **Embeddings** | Sentence-Transformers (`all-MiniLM-L6-v2`) |
+| **LLM** | Groq (`qwen/qwen3.8-27b` primary, with an automatic fallback chain) — or your own key on Groq / Gemini / OpenRouter |
+| **Embeddings** | Sentence-Transformers (`paraphrase-multilingual-MiniLM-L12-v2`) |
 | **Vector DB** | Qdrant (cloud or in-memory) |
 | **Database** | MongoDB Atlas |
 | **Auth** | Google OAuth 2.0, Email OTP, JWT |

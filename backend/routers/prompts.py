@@ -4,13 +4,14 @@ import time
 import json
 from bson import ObjectId
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from ..models.schemas import TrackRequest, EnhanceRequest, FeedbackRequest
 from ..core.config import settings
 from ..core.security import verify_jwt
 from ..core.database import MongoDB, in_memory_users, in_memory_saved_prompts
 from ..services.memory_service import MemoryService
 from ..services.llm_service import get_groq_client, mark_groq_rate_limited
+from ..services import providers
 
 router = APIRouter()
 
@@ -34,15 +35,20 @@ def get_user_tier(user_id: str) -> str:
     return "free"
 
 
-def get_model_for_tier(tier: str) -> str:
-    """Returns the LLM model name for the given subscription tier."""
-    return settings.TIER_MODELS.get(tier, settings.TIER_MODELS["free"])
+def effective_tier(user_id: str, request) -> str:
+    """
+    A user who brings their own provider key is not spending the shared
+    allowance, so they are not rationed against it.
+    """
+    if getattr(request, "byok_key", None):
+        return "byok"
+    return get_user_tier(user_id)
 
 
 def check_daily_limit(user_id: str, tier: str) -> tuple:
     """Returns (allowed: bool, count: int, limit: int)."""
     from datetime import datetime
-    limit = settings.TIER_LIMITS.get(tier, 20)
+    limit = settings.TIER_LIMITS.get(tier, settings.SHARED_KEY_DAILY_LIMIT)
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     count = 0
 
@@ -207,6 +213,10 @@ PLATFORM_HINTS = {
 # ── Language ISO code → full name mapping ──
 LANGUAGE_NAMES = {
     "en": "English", "hi": "Hindi", "ur": "Hindi",  # Map Urdu → Hindi (same spoken language)
+    # Romanised Hindi typed in Latin script. Named explicitly so the model is
+    # told to stay in Latin script — left as plain "Hindi", models reliably
+    # answer in Devanagari, which is not what a Hinglish typist wants back.
+    "hi-Latn": "Hinglish (romanised Hindi, written in Latin script — NOT Devanagari)",
     "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese",
     "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "ar": "Arabic",
     "ru": "Russian", "it": "Italian", "nl": "Dutch", "tr": "Turkish",
@@ -215,9 +225,41 @@ LANGUAGE_NAMES = {
 }
 
 
+# Distinctive romanised-Hindi tokens. Deliberately excludes anything that is
+# also an ordinary English word — "me", "to", "is", "so", "the", "hi", "an" —
+# so an English sentence cannot accumulate matches by accident. ("the" is a
+# real romanised Hindi word, the past-tense plural, but including it made
+# "The car is fast and the road is long" read as Hinglish.)
+_HINGLISH_TOKENS = frozenset("""
+mujhe muje mera meri mere tera teri tere uska uski unka unki apna apne apni
+kaise kaisa kaisi kya kyu kyun kyon kahan kahaan kab kaun kitna kitne kaunsa
+hai hain tha thi hoga hogi honge hona hoti hota raha rahi rahe
+karna karne karo kare karta karti karu karun karoge kiya kar karke
+nahi nahin haan bilkul zaroor jarur matlab yaar bhai behen
+chahiye chaahiye sakta sakti sakte padega padegi
+achha accha acha theek thik bahut bohot bhot thoda thodi zyada jyada
+batao bata samjha samjhao sikha sikhna seekhna banana banao banaye
+dena dedo lena lelo dekho dekhna suno sunao chalo
+aur lekin magar phir abhi kal aaj
+kuch sab liye wala wale wali
+taiyari padhai naukri paisa ghar dost
+""".split())
+
+# Grammatical particles. Individually far too weak to prove anything — they are
+# short enough to fall out of hyphenated technical jargon ("ka-band radar",
+# "se-based sensor") — so they only ever corroborate a strong marker.
+_HINGLISH_PARTICLES = frozenset("ka ki ke ko se ne bhi hi na".split())
+
+
 def _detect_text_language(text: str) -> str:
-    """Detect language from the text itself using Unicode script analysis.
-    Returns ISO 639-1 code: 'en', 'hi', etc.
+    """
+    Detect the language of the user's text.
+
+    Returns an ISO-ish code: 'en', 'hi' (Devanagari), or 'hi-Latn' (romanised
+    Hinglish). The romanised case matters because it is how most Indian users
+    actually type: script analysis alone sees only Latin characters, labels it
+    English, and the LANGUAGE REQUIREMENT then orders the model to answer in
+    English — silently overriding the Hinglish rule in OUTPUT_INSTRUCTION.
     """
     import re
     devanagari = len(re.findall(r'[\u0900-\u097F]', text))
@@ -226,12 +268,25 @@ def _detect_text_language(text: str) -> str:
     total = devanagari + arabic_urdu + latin
     if total == 0:
         return 'en'  # default
-    dev_ratio = devanagari / total
-    arabic_ratio = arabic_urdu / total
-    if arabic_ratio > 0.3:
-        return 'hi'  # Treat Urdu script as Hindi
-    if dev_ratio > 0.3:
+
+    # Urdu script and Devanagari are both treated as Hindi.
+    if arabic_urdu / total > 0.3 or devanagari / total > 0.3:
         return 'hi'
+
+    words = re.findall(r"[a-z']+", text.lower())
+    if len(words) >= 3:
+        strong = sum(1 for w in words if w in _HINGLISH_TOKENS)
+        particles = sum(1 for w in words if w in _HINGLISH_PARTICLES)
+        # At least one unambiguous marker is required; particles alone never
+        # qualify. Then either a second marker, corroborating particles, or a
+        # high concentration in a short line.
+        if strong >= 1 and (
+            strong >= 2
+            or particles >= 1
+            or strong / len(words) >= 0.34
+        ):
+            return 'hi-Latn'
+
     return 'en'
 
 
@@ -332,15 +387,19 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str):
     if platform in PLATFORM_HINTS:
         system_parts.append(f"### PLATFORM\n{PLATFORM_HINTS[platform]}")
 
-    # Feedback-aware instructions
-    if feedback_summary:
-        system_parts.append(f"### USER FEEDBACK PATTERNS\n{feedback_summary}")
-
+    # OUTPUT_INSTRUCTION ends with a FINAL CHECKPOINT that explicitly claims to
+    # override everything above it, so it has to stay last in the system block.
+    # The per-user feedback summary used to be spliced in just before it, which
+    # both weakened that ordering and made the system prompt vary per user —
+    # it now travels with the rest of the per-user context in the user message.
     system_parts.append(OUTPUT_INSTRUCTION)
     system_prompt = "\n".join(system_parts)
 
     # ── 8. BUILD USER MESSAGE ──
     user_parts = []
+
+    if feedback_summary:
+        user_parts.append(f"### THIS USER'S FEEDBACK PATTERNS\n{feedback_summary}")
 
     if conversation_ctx:
         user_parts.append(f"### RECENT CONVERSATION (what the user has been discussing)\n{conversation_ctx}")
@@ -380,6 +439,14 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str):
         f"The input text is in {lang_name} — do NOT switch languages. "
         "Ignore the language of past patterns, saved prompts, or conversation history — "
         f"output ONLY in **{lang_name}**."
+        + (
+            "\n⚠️ SCRIPT REQUIREMENT: The user typed Hindi using the English alphabet. "
+            "Reply the same way — romanised Hindi in Latin characters, mixing in English "
+            "words wherever that is natural, exactly as the user did. "
+            "Do NOT transliterate into Devanagari (देवनागरी) and do NOT translate into "
+            "pure English."
+            if source_lang == "hi-Latn" else ""
+        )
     )
     user_parts.append(task_instruction)
 
@@ -399,6 +466,32 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str):
         "conversation_ctx": conversation_ctx,
         "feedback_summary": feedback_summary,
     }
+
+
+STEERING_TURN = (
+    "Understood. I will rewrite the user's raw text into a better prompt. "
+    "I will NOT answer their question, summarize their intent, or respond as an assistant. "
+    "My output will be a refined prompt the user can paste into an AI chat."
+)
+
+
+def _llm_messages(ctx: dict) -> list:
+    """The three-turn shape both enhance endpoints send."""
+    return [
+        {"role": "system", "content": ctx["system_prompt"]},
+        {"role": "assistant", "content": STEERING_TURN},
+        {"role": "user", "content": ctx["user_message"]},
+    ]
+
+
+def _temperature_for(mode: str) -> float:
+    """
+    Groq documents 0.5-0.7 for every model now in the chain and warns that
+    lower values cause "repetitions or incoherent outputs". The previous
+    0.2/0.3/0.4 ladder sat entirely below that floor; this keeps the same
+    relative ordering inside the supported band.
+    """
+    return {"quick": 0.5, "deep": 0.6, "creative": 0.7}.get(mode, 0.6)
 
 
 @router.post("/track")
@@ -429,8 +522,28 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
     """
     The core prompt engineering endpoint — intent-aware, mode-aware.
     """
-    model = settings.TIER_MODELS.get("pro", "llama-3.3-70b-versatile")
-    print(f"\n🎯 /enhance — user={user_id[:8]}... mode={request.mode} model={model}")
+    tier = effective_tier(user_id, request)
+    allowed, used, limit = check_daily_limit(user_id, tier)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "daily_limit_reached",
+                "detail": (
+                    f"You've used all {limit} free enhancements for today. "
+                    "Add your own free API key in the extension settings for "
+                    "1,000 per day."
+                    if tier != "byok" else
+                    f"Daily limit of {limit} reached."
+                ),
+                "used": used,
+                "limit": limit,
+                "tier": tier,
+                "byok_available": tier != "byok",
+            },
+        )
+
+    print(f"\n🎯 /enhance — user={user_id[:8]}... mode={request.mode} tier={tier} ({used}/{limit})")
     print(f"   Prompt: \"{request.prompt[:80]}...\"")
     print(f"   Selected IDs: {request.selected_prompt_ids or 'none'}")
     print(f"   Conversation msgs: {len(request.conversation_context or [])}")
@@ -452,43 +565,34 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
         print(f"      \u2502    \u2514\u2500 \"{pm['original'][:50]}...\" \u2192 score: {pm['score']}")
     print(f"      \u2514\u2500 \U0001F4CA Feedback: {'Active' if ctx['feedback_summary'] else 'None'}")
 
-    # ── CALL LLM (with tier-based model + key rotation on 429) ──
-    enhanced_prompt = request.prompt
+    # ── CALL LLM ──
+    # The fallback chain handles key rotation, dead models and provider
+    # failover internally. A total failure raises, and we surface it as a real
+    # error: the old code initialised enhanced_prompt to the user's own text
+    # and swallowed the exception, so when Groq decommissioned the model the
+    # endpoint kept returning HTTP 200 and nobody noticed it had stopped working.
     try:
-        client = get_groq_client()
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": ctx["system_prompt"]},
-                {"role": "assistant", "content": "Understood. I will rewrite the user's raw text into a better prompt. I will NOT answer their question, summarize their intent, or respond as an assistant. My output will be a refined prompt the user can paste into an AI chat."},
-                {"role": "user", "content": ctx["user_message"]}
-            ],
-            model=model,
-            temperature=0.2 if ctx["mode"] == "quick" else 0.4 if ctx["mode"] == "creative" else 0.3,
+        result = providers.chat(
+            messages=_llm_messages(ctx),
+            temperature=_temperature_for(ctx["mode"]),
+            user_provider=request.byok_provider,
+            user_key=request.byok_key,
+            user_model=request.byok_model,
         )
-        enhanced_prompt = chat_completion.choices[0].message.content
-    except Exception as e:
-        err = str(e)
-        if "429" in err or "rate" in err.lower():
-            print(f"🔄 Rate limit hit, rotating API key...")
-            mark_groq_rate_limited()
-            try:
-                client = get_groq_client()
-                chat_completion = client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": ctx["system_prompt"]},
-                        {"role": "assistant", "content": "Understood. I will rewrite the user's raw text into a better prompt. I will NOT answer their question, summarize their intent, or respond as an assistant. My output will be a refined prompt the user can paste into an AI chat."},
-                        {"role": "user", "content": ctx["user_message"]}
-                    ],
-                    model="llama-3.3-70b-versatile",
-                    temperature=0.2 if ctx["mode"] == "quick" else 0.4 if ctx["mode"] == "creative" else 0.3,
-                )
-                enhanced_prompt = chat_completion.choices[0].message.content
-            except Exception as retry_err:
-                print(f"❌ Retry also failed: {retry_err}")
-        else:
-            print(f"❌ Groq API Error: {e}")
+    except providers.NoProviderAvailable as e:
+        print(f"❌ All providers failed: {e}")
+        return JSONResponse(
+            status_code=429 if e.all_rate_limited else 503,
+            content={
+                "error": "quota_exhausted" if e.all_rate_limited else "enhancement_failed",
+                "detail": e.user_message,
+                "byok_available": e.all_rate_limited and not request.byok_key,
+                "attempts": [{"model": label, "error": err} for label, err in e.attempts],
+            },
+        )
 
-    process_time = round(time.time() - ctx["start_time"], 2) 
+    enhanced_prompt = result["content"]
+    process_time = round(time.time() - ctx["start_time"], 2)
     
     # ── LOG ──
     max_similarity = ctx["similar_saved"][0]["score"] if ctx["similar_saved"] else 0.0
@@ -514,6 +618,10 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
         "log_id": log_id,
         "latency": process_time,
         "mode": ctx["mode"],
+        "model": result["model"],
+        "provider": result["provider"],
+        "byok": result["byok"],
+        "usage_today": {"used": used + 1, "limit": limit, "tier": tier},
         "context_used": {
             "selected": len(ctx["selected_context_parts"]),
             "auto_matched": len(ctx["similarity_context_parts"]),
@@ -540,80 +648,99 @@ def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(verify
     """
     Streaming enhancement — returns tokens as Server-Sent Events for real-time UI.
     """
-    model = settings.TIER_MODELS.get("pro", "llama-3.3-70b-versatile")
-    print(f"\n⚡ /enhance/stream — user={user_id[:8]}... mode={request.mode} model={model}")
+    tier = effective_tier(user_id, request)
+    allowed, used, limit = check_daily_limit(user_id, tier)
+
+    print(f"\n⚡ /enhance/stream — user={user_id[:8]}... mode={request.mode} tier={tier} ({used}/{limit})")
     print(f"   Prompt: \"{request.prompt[:80]}...\"")
+
+    if not allowed:
+        def refuse():
+            payload = {
+                "error": "daily_limit_reached",
+                "detail": (
+                    f"You've used all {limit} free enhancements for today. "
+                    "Add your own free API key in the extension settings for 1,000 per day."
+                    if tier != "byok" else f"Daily limit of {limit} reached."
+                ),
+                "used": used, "limit": limit, "byok_available": tier != "byok",
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps({'done': True, 'failed': True})}\n\n"
+        return StreamingResponse(refuse(), media_type="text/event-stream")
 
     ctx = _build_enhance_context(request, user_id)
 
     def generate():
         enhanced_parts = []
+        meta = {}
+        failure = None
+
         try:
-            client = get_groq_client()
-            stream = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": ctx["system_prompt"]},
-                    {"role": "assistant", "content": "Understood. I will rewrite the user's raw text into a better prompt. I will NOT answer their question, summarize their intent, or respond as an assistant. My output will be a refined prompt the user can paste into an AI chat."},
-                    {"role": "user", "content": ctx["user_message"]}
-                ],
-                model=model,
-                temperature=0.2 if ctx["mode"] == "quick" else 0.4 if ctx["mode"] == "creative" else 0.3,
-                stream=True,
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    enhanced_parts.append(delta.content)
-                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+            for event in providers.chat_stream(
+                messages=_llm_messages(ctx),
+                temperature=_temperature_for(ctx["mode"]),
+                user_provider=request.byok_provider,
+                user_key=request.byok_key,
+                user_model=request.byok_model,
+            ):
+                if "token" in event:
+                    enhanced_parts.append(event["token"])
+                    yield f"data: {json.dumps({'token': event['token']})}\n\n"
+                elif "meta" in event:
+                    meta = event["meta"]
+                elif "error" in event:
+                    failure = event["error"]
+                    yield f"data: {json.dumps({'error': failure})}\n\n"
+        except providers.NoProviderAvailable as e:
+            failure = e.user_message
+            print(f"❌ All providers failed (stream): {e}")
+            yield "data: " + json.dumps({
+                "error": failure,
+                "detail": failure,
+                "byok_available": e.all_rate_limited and not request.byok_key,
+                "attempts": [{"model": m, "error": err} for m, err in e.attempts],
+            }) + "\n\n"
 
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "rate" in err.lower():
-                print(f"🔄 Stream rate limit hit, rotating API key...")
-                mark_groq_rate_limited()
-                try:
-                    client = get_groq_client()
-                    stream = client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": ctx["system_prompt"]},
-                            {"role": "assistant", "content": "Understood. I will rewrite the user's raw text into a better prompt. I will NOT answer their question, summarize their intent, or respond as an assistant. My output will be a refined prompt the user can paste into an AI chat."},
-                            {"role": "user", "content": ctx["user_message"]}
-                        ],
-                        model=model,
-                        temperature=0.2 if ctx["mode"] == "quick" else 0.4 if ctx["mode"] == "creative" else 0.3,
-                        stream=True,
-                    )
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            enhanced_parts.append(delta.content)
-                            yield f"data: {json.dumps({'token': delta.content})}\n\n"
-                except Exception as retry_err:
-                    print(f"❌ Stream retry failed: {retry_err}")
-                    yield f"data: {json.dumps({'error': str(retry_err)})}\n\n"
-            else:
-                print(f"❌ Groq Stream Error: {e}")
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-        # After streaming is done, log and memorize
         enhanced_prompt = "".join(enhanced_parts)
         process_time = round(time.time() - ctx["start_time"], 2)
-        max_similarity = ctx["similar_saved"][0]["score"] if ctx["similar_saved"] else 0.0
 
-        log_id = MemoryService.log_prompt(
-            user_id=user_id,
-            original=request.prompt,
-            enhanced=enhanced_prompt,
-            score=max_similarity,
-            latency=process_time,
-            mode=ctx["mode"],
-        )
+        # Only record a real enhancement. Logging an empty string as a success
+        # is what let the outage hide inside the metrics for two weeks.
+        log_id = None
+        if enhanced_prompt.strip():
+            max_similarity = ctx["similar_saved"][0]["score"] if ctx["similar_saved"] else 0.0
+            log_id = MemoryService.log_prompt(
+                user_id=user_id,
+                original=request.prompt,
+                enhanced=enhanced_prompt,
+                score=max_similarity,
+                latency=process_time,
+                mode=ctx["mode"],
+            )
+            if max_similarity < 0.90:
+                MemoryService.memorize_strategy(user_id, request.prompt, enhanced_prompt)
+        elif not failure:
+            failure = "The model returned an empty response."
+            yield f"data: {json.dumps({'error': failure})}\n\n"
 
-        if max_similarity < 0.90:
-            MemoryService.memorize_strategy(user_id, request.prompt, enhanced_prompt)
-
-        # Send final metadata event
-        yield f"data: {json.dumps({'done': True, 'log_id': log_id, 'latency': process_time, 'mode': ctx['mode'], 'context_used': {'selected': len(ctx['selected_context_parts']), 'auto_matched': len(ctx['similarity_context_parts']), 'passive_matched': len(ctx['passive_context_parts']), 'conversation_messages': len(request.conversation_context or [])}})}\n\n"
+        yield "data: " + json.dumps({
+            "done": True,
+            "failed": bool(failure) or not enhanced_prompt.strip(),
+            "log_id": log_id,
+            "latency": process_time,
+            "mode": ctx["mode"],
+            "model": meta.get("model"),
+            "provider": meta.get("provider"),
+            "byok": meta.get("byok", False),
+            "usage_today": {"used": used + (1 if log_id else 0), "limit": limit, "tier": tier},
+            "context_used": {
+                "selected": len(ctx["selected_context_parts"]),
+                "auto_matched": len(ctx["similarity_context_parts"]),
+                "passive_matched": len(ctx["passive_context_parts"]),
+                "conversation_messages": len(request.conversation_context or []),
+            },
+        }) + "\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -690,12 +817,15 @@ async def voice_enhance(
     platform: str = Form("unknown"),
     conversation_context: str = Form(""),
     selected_prompt_ids: str = Form("[]"),
+    byok_provider: str = Form(""),
+    byok_key: str = Form(""),
+    byok_model: str = Form(""),
     user_id: str = Depends(verify_jwt),
 ):
     """
     Voice-to-Prompt pipeline:
       1. Transcribe audio with Groq Whisper (whisper-large-v3-turbo) — auto-detects language
-      2. Enhance transcript with LLM (llama-3.3-70b-versatile)
+      2. Enhance the transcript through the provider fallback chain
       3. Return both transcription and enhanced prompt
     """
     print(f"\n🎤 /voice-enhance — user={user_id[:8]}... mode={mode} platform={platform}")
@@ -711,7 +841,8 @@ async def voice_enhance(
     transcribed_text = ""
     detected_language = "unknown"
     try:
-        client = get_groq_client()
+        whisper_key = byok_key if (byok_provider or "").lower() == "groq" else None
+        client = get_groq_client(whisper_key)
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = audio.filename or "audio.webm"
 
@@ -748,7 +879,7 @@ async def voice_enhance(
             print(f"🔄 Whisper rate limit hit, rotating API key...")
             mark_groq_rate_limited()
             try:
-                client = get_groq_client()
+                client = get_groq_client(whisper_key)
                 audio_file = io.BytesIO(audio_bytes)
                 audio_file.name = audio.filename or "audio.webm"
                 transcription = client.audio.transcriptions.create(
@@ -804,8 +935,17 @@ async def voice_enhance(
         conversation_context=ctx_list if ctx_list else None,
         selected_prompt_ids=sel_ids if sel_ids else None,
         source_language=detected_language if detected_language != "unknown" else None,
+        byok_provider=byok_provider or None,
+        byok_key=byok_key or None,
+        byok_model=byok_model or None,
     )
     enhance_result = enhance_prompt(enhance_req, user_id)
+
+    # enhance_prompt returns a JSONResponse when every provider fails or the
+    # daily limit is hit. Hand that straight back rather than .get()-ing a
+    # Response object and reporting the raw transcript as an "enhancement".
+    if isinstance(enhance_result, JSONResponse):
+        return enhance_result
 
     total_time = round(time.time() - start_time, 2)
 

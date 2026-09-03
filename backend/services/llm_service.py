@@ -114,8 +114,22 @@ class GroqClientPool:
 _pool = GroqClientPool()
 
 
-def get_groq_client():
-    """Get the current Groq client from the pool. Transparent key rotation."""
+def get_groq_client(api_key: str = None):
+    """
+    Get a Groq client.
+
+    Chat completions go through services/providers.py instead; this pool now
+    exists for Groq-only endpoints — currently Whisper transcription, which has
+    no equivalent in the OpenAI-compatible chat path.
+
+    Pass api_key to use a caller-supplied (BYOK) key, so a user who brought
+    their own key spends their own voice quota rather than the shared one.
+    """
+    if api_key:
+        try:
+            return Groq(api_key=api_key.strip())
+        except Exception as e:
+            print(f"⚠️ BYOK Groq client init failed, falling back to server key: {e}")
     return _pool.get_client()
 
 

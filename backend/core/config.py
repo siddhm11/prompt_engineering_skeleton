@@ -11,9 +11,13 @@ class Settings:
     # Environment: "development" or "production"
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-    # API Keys
+    # API Keys — Groq is the default provider; the others are only needed if
+    # you want a server-side fallback beyond Groq. Users supplying their own
+    # key (BYOK) do not require any of these to be set.
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     MONGO_URI = os.getenv("MONGO_URI")
     QDRANT_URL = os.getenv("QDRANT_URL", ":memory:")
     QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -44,16 +48,27 @@ class Settings:
     RATE_LIMIT_ENHANCE = os.getenv("RATE_LIMIT_ENHANCE", "30/minute")
     RATE_LIMIT_VOICE = os.getenv("RATE_LIMIT_VOICE", "10/minute")
 
-    # Subscription Tiers — model routing
-    TIER_MODELS = {
-        "free":       os.getenv("FREE_TIER_MODEL", "llama-3.1-8b-instant"),
-        "pro":        os.getenv("PRO_TIER_MODEL", "llama-3.3-70b-versatile"),
-        "enterprise": os.getenv("ENTERPRISE_TIER_MODEL", "llama-3.3-70b-versatile"),
-    }
+    # Model selection lives in services/providers.py as an ordered fallback
+    # chain, not here. Pinning a single model id in config is what caused the
+    # 2026-08-16 outage: Groq decommissioned llama-3.3-70b-versatile and every
+    # request began failing with no fallback. Override the head of the chain
+    # here only if you need to force a specific model.
+    MODEL_OVERRIDE = os.getenv("MODEL_OVERRIDE", "").strip() or None
 
-    # Daily enhancement limits per tier
+    # Daily enhancement limits.
+    #
+    # The shared server key is a genuinely scarce resource: Groq's free tier is
+    # 1,000 requests/day and 8,000 tokens/minute per ORGANISATION, and this app
+    # spends ~2,000 tokens per enhancement. That is ~4 enhancements per minute
+    # and ~100 per day for the entire user base combined — so the shared-key
+    # allowance is rationed tightly and users are steered toward BYOK, where
+    # the same 1,000 requests/day belong to them alone.
+    SHARED_KEY_DAILY_LIMIT = int(os.getenv("SHARED_KEY_DAILY_LIMIT", "15"))
+    BYOK_DAILY_LIMIT = int(os.getenv("BYOK_DAILY_LIMIT", "1000"))
+
     TIER_LIMITS = {
-        "free":       int(os.getenv("FREE_TIER_LIMIT", "20")),
+        "free":       int(os.getenv("FREE_TIER_LIMIT", str(SHARED_KEY_DAILY_LIMIT))),
+        "byok":       int(os.getenv("BYOK_DAILY_LIMIT", "1000")),
         "pro":        int(os.getenv("PRO_TIER_LIMIT", "200")),
         "enterprise": int(os.getenv("ENTERPRISE_TIER_LIMIT", "9999")),
     }

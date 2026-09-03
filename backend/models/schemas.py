@@ -47,6 +47,13 @@ class EnhanceRequest(BaseModel):
     selected_prompt_ids: Optional[List[str]] = None
     source_language: Optional[str] = None  # ISO code from Whisper (e.g., "en", "hi")
 
+    # BYOK — the user's own provider key, forwarded per request and never
+    # persisted server-side. Sending it here (rather than storing it) means a
+    # database breach cannot leak anyone's provider credentials.
+    byok_provider: Optional[str] = None   # "groq" | "gemini" | "openrouter"
+    byok_key: Optional[str] = None
+    byok_model: Optional[str] = None
+
 class FeedbackRequest(BaseModel):
     """Thumbs up/down on an enhanced prompt."""
     log_id: str

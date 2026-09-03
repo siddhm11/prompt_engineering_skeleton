@@ -299,6 +299,180 @@
         .btn-logout:active {
             transform: scale(0.97);
         }
+        /* ── BYOK key card ── */
+        .key-section {
+            padding: 16px 20px 4px;
+        }
+
+        .key-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 12px;
+            padding: 14px;
+        }
+
+        .key-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .key-title {
+            font-size: 13px;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .key-pill {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 999px;
+            letter-spacing: 0.02em;
+        }
+
+        .key-pill.on {
+            background: rgba(80, 200, 168, 0.15);
+            color: #50c8a8;
+        }
+
+        .key-pill.off {
+            background: rgba(255, 255, 255, 0.07);
+            color: #8b8b96;
+        }
+
+        .key-blurb {
+            font-size: 11px;
+            line-height: 1.5;
+            color: #8b8b96;
+            margin-bottom: 10px;
+        }
+
+        .key-blurb strong {
+            color: #c9c9d4;
+            font-weight: 600;
+        }
+
+        .key-row {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .key-input,
+        .key-select {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.32);
+            border: 1px solid rgba(255, 255, 255, 0.09);
+            border-radius: 8px;
+            padding: 8px 10px;
+            color: #e8e8ed;
+            font-size: 12px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .key-input:focus,
+        .key-select:focus {
+            border-color: #50c8a8;
+        }
+
+        .key-input::placeholder {
+            color: #55555f;
+        }
+
+        .key-actions {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .btn-key {
+            flex: 1;
+            background: #50c8a8;
+            color: #07130f;
+            border: none;
+            border-radius: 8px;
+            padding: 9px;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .btn-key:hover {
+            filter: brightness(1.08);
+        }
+
+        .btn-key:disabled {
+            opacity: 0.55;
+            cursor: default;
+        }
+
+        .btn-key-ghost {
+            background: rgba(255, 255, 255, 0.06);
+            color: #c9c9d4;
+        }
+
+        .key-link {
+            display: inline-block;
+            font-size: 11px;
+            color: #7b9cf0;
+            text-decoration: none;
+            margin-bottom: 10px;
+        }
+
+        .key-link:hover {
+            text-decoration: underline;
+        }
+
+        .key-status {
+            font-size: 11px;
+            line-height: 1.45;
+            margin-top: 8px;
+            min-height: 14px;
+        }
+
+        .key-status.ok {
+            color: #50c8a8;
+        }
+
+        .key-status.err {
+            color: #f0796f;
+        }
+
+        .key-status.busy {
+            color: #8b8b96;
+        }
+
+        .key-privacy {
+            font-size: 10px;
+            color: #6d6d78;
+            line-height: 1.45;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .section-divider {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 20px 0;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            color: #55555f;
+        }
+
+        .section-divider::before,
+        .section-divider::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.06);
+        }
     </style>
 </head>
 
@@ -307,15 +481,59 @@
     <div class="popup-header">
         <div class="popup-logo">⊕</div>
         <span class="popup-title">Prompt Memory</span>
-        <span class="popup-version">v4</span>
+        <span class="popup-version">v4.1</span>
     </div>
+
+    <!-- ═══ API KEY (BYOK) ═══ -->
+    <!-- Placed above sign-in on purpose: it is the faster route to a working
+         enhancement and gives the user a far larger free allowance than the
+         shared server key can. -->
+    <div class="key-section">
+        <div class="key-card">
+            <div class="key-head">
+                <span class="key-title">Your AI model</span>
+                <span class="key-pill off" id="key-pill">Not set</span>
+            </div>
+            <div class="key-blurb" id="key-blurb">
+                Add your own free API key for <strong>1,000 enhancements a day</strong>.
+                No credit card, and it works without an account.
+            </div>
+
+            <select class="key-select" id="key-provider" style="margin-bottom:6px;">
+                <option value="groq">Groq — free, no card (recommended)</option>
+                <option value="gemini">Google Gemini — free</option>
+                <option value="openrouter">OpenRouter</option>
+            </select>
+
+            <a class="key-link" id="key-get-link" href="https://console.groq.com/keys" target="_blank" rel="noreferrer">
+                Get a free key →
+            </a>
+
+            <div class="key-row">
+                <input class="key-input" id="key-input" type="password" autocomplete="off"
+                    spellcheck="false" placeholder="Paste your key here">
+            </div>
+
+            <select class="key-select" id="key-model" style="margin-bottom:8px;"></select>
+
+            <div class="key-actions">
+                <button class="btn-key" id="key-save">Save &amp; test</button>
+                <button class="btn-key btn-key-ghost" id="key-clear" style="flex:0 0 auto;padding:9px 12px;">Clear</button>
+            </div>
+
+            <div class="key-status" id="key-status"></div>
+            <div class="key-privacy" id="key-privacy"></div>
+        </div>
+    </div>
+
+    <div class="section-divider">OPTIONAL</div>
 
     <!-- ═══ LOGIN ═══ -->
     <div id="login-section">
         <div class="login-section">
             <div class="login-icon">✨</div>
-            <div class="login-title">Better prompts, better AI</div>
-            <div class="login-subtitle">Sign in to enhance your prompts on ChatGPT, Claude, Gemini, and more.</div>
+            <div class="login-title">Sign in for memory</div>
+            <div class="login-subtitle">Optional. Adds saved prompts, history, and context from your past prompts. Without a key of your own, signing in gives you 15 enhancements a day on our shared key.</div>
             <button class="btn-google" id="google-login-btn">
                 <svg width="18" height="18" viewBox="0 0 24 24">
                     <path fill="#4285F4"

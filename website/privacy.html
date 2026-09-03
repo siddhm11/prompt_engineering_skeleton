@@ -76,7 +76,7 @@
 <body>
     <div class="container">
         <h1>Privacy Policy</h1>
-        <p class="last-updated">Last updated: March 21, 2026</p>
+        <p class="last-updated">Last updated: September 3, 2026</p>
 
         <p>Prompt Memory ("we", "our", "the extension") is a browser extension that enhances your AI prompts. This policy explains what data we collect, how we use it, and how you can control it.</p>
 
@@ -137,24 +137,36 @@
             <li>All API communication uses HTTPS encryption</li>
         </ul>
 
-        <h2>5. Third-Party Services</h2>
+        <h2>5. Your Own API Key (BYOK)</h2>
+        <p>You can add your own free API key from an AI provider in the extension's settings. This changes where your prompt text goes, so it is worth being precise about it.</p>
+        <ul>
+            <li><strong>Your key is stored only on your own device</strong>, in <code>chrome.storage.local</code>. It is never uploaded to us, never written to our database, and is deliberately not placed in Chrome's synced storage, so it does not replicate to your other browsers.</li>
+            <li><strong>If you add a key but do not sign in</strong>, your prompt goes directly from your browser to the provider you chose. It never reaches our servers, and nothing is logged or stored anywhere by us.</li>
+            <li><strong>If you add a key and also sign in</strong>, your prompt passes through our server so we can add your saved prompts and history as context. Your key is forwarded with that single request and used only to make that one call — we do not store it.</li>
+            <li><strong>Provider data policies differ, and this matters.</strong> Groq states it does not train on API inputs. Google's Gemini pricing page marks free-tier data as "Used to improve our products: Yes" — so if you choose Gemini on its free tier, Google may use your prompts to improve their models. The extension shows this next to each provider so you can choose knowingly.</li>
+            <li><strong>You can remove your key at any time</strong> with the "Clear" button in the extension settings.</li>
+        </ul>
+
+        <h2>6. Third-Party Services</h2>
         <ul>
             <li><strong>Google OAuth</strong> — for authentication (Google's <a href="https://policies.google.com/privacy" target="_blank">Privacy Policy</a>)</li>
-            <li><strong>Groq API</strong> — for AI prompt enhancement and voice transcription</li>
+            <li><strong>Groq API</strong> — for AI prompt enhancement and voice transcription (<a href="https://groq.com/privacy-policy/" target="_blank">Privacy Policy</a>)</li>
+            <li><strong>Google Gemini API</strong> — only if you choose it as your own provider (<a href="https://ai.google.dev/gemini-api/terms" target="_blank">API Terms</a>)</li>
+            <li><strong>OpenRouter</strong> — only if you choose it as your own provider</li>
             <li><strong>MongoDB Atlas</strong> — for data storage</li>
         </ul>
 
-        <h2>6. Your Rights & Controls</h2>
+        <h2>7. Your Rights &amp; Controls</h2>
         <ul>
             <li><strong>Opt out of tracking</strong> — toggle off "Prompt Learning" in the ⚙ settings in the sidebar</li>
             <li><strong>Delete your data</strong> — contact us to request account and data deletion</li>
             <li><strong>Log out</strong> — sign out from the extension popup at any time</li>
         </ul>
 
-        <h2>7. Changes to This Policy</h2>
+        <h2>8. Changes to This Policy</h2>
         <p>We may update this privacy policy from time to time. Changes will be reflected with an updated "Last updated" date at the top of this page.</p>
 
-        <h2>8. Contact</h2>
+        <h2>9. Contact</h2>
         <p>If you have questions about this privacy policy, please reach out via the feedback form in the extension or email us.</p>
 
         <a href="index.html" class="back-link">← Back to Prompt Memory</a>

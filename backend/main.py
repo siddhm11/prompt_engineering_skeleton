@@ -71,9 +71,37 @@ def startup_db_client():
     print(f"   Docs: http://localhost:8000/docs")
     print(f"{'='*60}\n")
 
+@app.on_event("shutdown")
+def shutdown_clients():
+    """Release the pooled HTTP connections to the LLM providers."""
+    try:
+        from .services.providers import close_http_client
+        close_http_client()
+    except Exception as e:
+        print(f"⚠️ HTTP client shutdown: {e}")
+
+
 @app.get("/")
 def health_check():
-    return {"status": "running", "service": "Context-Aware Prompt Engine", "version": "4.0"}
+    return {"status": "running", "service": "Context-Aware Prompt Engine", "version": "4.1"}
+
+
+@app.get("/health/llm")
+def llm_health():
+    """
+    Provider and model-chain health.
+
+    Exists because the 2026-08 outage was invisible: a decommissioned model
+    returned 404, the handler swallowed it, and /enhance kept answering 200.
+    Any model that 404s is recorded in dead_models here, so the next failure of
+    that kind is one HTTP call away from being diagnosed.
+    """
+    from .services.providers import pool_status
+    status = pool_status()
+    status["healthy"] = bool(status["chain"]) and any(
+        p["keys_configured"] > 0 for p in status["providers"].values()
+    )
+    return status
 
 # Include Routers
 app.include_router(auth.router)

@@ -1673,3 +1673,91 @@
     transform: translateX(18px);
     background: var(--pm-accent);
 }
+/* ══════════════════════════════════════════════════════════════
+   ERROR STATE — shown when an enhancement fails.
+   Previously every failure left the modal frozen on "Enhancing…",
+   so a dead model and a slow one looked identical to the user.
+   ══════════════════════════════════════════════════════════════ */
+
+.pm-error-box {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--pm-danger-light);
+    border: 1px solid rgba(239, 83, 80, 0.28);
+    border-radius: 10px;
+    padding: 14px;
+}
+
+.pm-error-icon {
+    font-size: 18px;
+    line-height: 1.2;
+    flex: 0 0 auto;
+}
+
+.pm-error-text {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--pm-text);
+}
+
+.pm-error-hint {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--pm-text-muted);
+    margin-top: 12px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   FIRST-RUN SETUP — offered when the user has neither an account
+   nor an API key. The no-account option leads.
+   ══════════════════════════════════════════════════════════════ */
+
+.pm-setup-intro {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--pm-text-secondary, var(--pm-text));
+    margin: 0 0 16px;
+}
+
+.pm-setup-option {
+    border: 1px solid var(--pm-border);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 12px;
+    background: var(--pm-bg-secondary);
+}
+
+.pm-setup-option-primary {
+    border-color: var(--pm-border-accent, rgba(80, 200, 168, 0.35));
+    background: var(--pm-accent-light, rgba(80, 200, 168, 0.08));
+}
+
+.pm-setup-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--pm-accent);
+    margin-bottom: 8px;
+}
+
+.pm-setup-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--pm-text);
+    margin-bottom: 6px;
+}
+
+.pm-setup-desc {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--pm-text-muted);
+    margin-bottom: 12px;
+}
+
+.pm-setup-desc strong {
+    color: var(--pm-text);
+    font-weight: 600;
+}

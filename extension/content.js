@@ -213,6 +213,17 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone) {
     body.selected_prompt_ids = selectedPromptIds;
   }
 
+  // Attach the user's own key, if they have one, so a signed-in user keeps the
+  // memory features while spending their own quota instead of the shared one.
+  // It is fetched from the service worker per request and never stored here —
+  // this script shares a process with the host page.
+  const byok = await askWorker({ type: "PM_GET_BYOK_FOR_BACKEND" });
+  if (byok && byok.key) {
+    body.byok_provider = byok.provider;
+    body.byok_key = byok.key;
+    body.byok_model = byok.model;
+  }
+
   try {
     const res = await fetch(`${API_URL}/enhance/stream`, {
       method: "POST",
@@ -223,9 +234,15 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone) {
       body: JSON.stringify(body),
     });
 
+    if (!res.ok) {
+      onDone({ failed: true, detail: `Server returned HTTP ${res.status}.` });
+      return;
+    }
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let streamError = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -242,9 +259,14 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone) {
             if (data.token) {
               onToken(data.token);
             } else if (data.done) {
-              onDone(data);
+              // Carry any error seen earlier in the stream into the final
+              // event, so the caller has one place to check for failure.
+              onDone(streamError ? { ...data, failed: true, detail: streamError } : data);
             } else if (data.error) {
-              console.error("Stream error:", data.error);
+              // Was console.error only, which is why a dead model looked
+              // identical to a slow one from the user's side.
+              streamError = data.detail || data.error;
+              console.error("Prompt Memory stream error:", streamError);
             }
           } catch (e) { }
         }
@@ -252,7 +274,7 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone) {
     }
   } catch (e) {
     console.error("Streaming enhance error:", e);
-    return null;
+    onDone({ failed: true, detail: "Lost connection to the server mid-response." });
   }
 }
 
@@ -366,12 +388,31 @@ function createTrigger() {
 // ══════════════════════════════════════════════════════════════
 
 function setupKeyboardShortcut() {
+  // Primary path: Chrome intercepts the chords declared in manifest.json's
+  // "commands" block at the browser level, so they never reach this page. The
+  // service worker catches them and forwards them here.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type !== "PM_COMMAND") return;
+    if (msg.command === "enhance-prompt") handleEnhance();
+    if (msg.command === "voice-prompt") toggleVoice();
+  });
+
+  // Fallback path: the user may have cleared or rebound the command in
+  // chrome://extensions/shortcuts, in which case Chrome does not intercept and
+  // the keystroke does arrive here.
   document.addEventListener("keydown", (e) => {
-    if (e.ctrlKey && e.shiftKey && e.key === "E") {
+    // Accept Cmd on macOS as well as Ctrl. The manifest advertises
+    // Command+Shift+E on Mac, but this listener only ever checked ctrlKey — so
+    // the advertised Mac shortcut did nothing here.
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+
+    // Compare on e.code, not e.key. With Shift held, e.key is layout-dependent
+    // ("E" on US QWERTY, but a different character on many other layouts),
+    // whereas e.code names the physical key.
+    if (e.code === "KeyE") {
       e.preventDefault();
       handleEnhance();
-    }
-    if (e.ctrlKey && e.shiftKey && e.key === "V") {
+    } else if (e.code === "KeyV") {
       e.preventDefault();
       toggleVoice();
     }
@@ -1093,19 +1134,28 @@ function loadRecentFeedback() {
 // ══════════════════════════════════════════════════════════════
 
 async function handleEnhance() {
-  const auth = await getAuth();
-  if (!auth) {
-    showToast("Please log in first (click the extension icon).", "error");
-    return;
-  }
-  if (isTokenExpired(auth.token)) {
-    showToast("Session expired — re-login from extension popup.", "error");
-    return;
-  }
-
   const inputText = getCurrentInputText();
   if (!inputText || inputText.trim().length < 3) {
     showToast("Type a prompt in the chat input first.", "error");
+    return;
+  }
+
+  // Ask the service worker how this request should be routed. It owns the API
+  // key, so the decision cannot be made here.
+  const route = await askWorker({ type: "PM_GET_ROUTE" });
+  if (!route) {
+    // The worker is unreachable. Almost always this tab's content script was
+    // orphaned by an extension update or reload — the page needs refreshing,
+    // which is a different problem from "you have not set anything up yet".
+    showToast("Prompt Memory was updated — please reload this page.", "error");
+    return;
+  }
+  if (route.route === "none") {
+    // Neither signed in nor holding a key. Previously this said "Please log in
+    // first" and stopped — the extension delivered nothing at all until the
+    // user completed a Google OAuth flow. Now there are two ways forward and
+    // the faster one needs no account.
+    showSetupRequiredModal();
     return;
   }
 
@@ -1114,43 +1164,142 @@ async function handleEnhance() {
     btn.disabled = true;
     btn.textContent = "Enhancing...";
   }
-  showToast(`Enhancing in ${currentMode} mode...`, "info");
 
-  // Use streaming enhancement
   showStreamingDiffModal(inputText);
 
-  let enhancedParts = [];
+  try {
+    if (route.route === "direct") {
+      await runDirectEnhance(inputText, route);
+    } else {
+      await runBackendEnhance(inputText);
+    }
+  } catch (err) {
+    console.error("Prompt Memory: enhance failed", err);
+    failStreamingModal(err?.message || "Enhancement failed. Please try again.");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Enhance Current Prompt";
+    }
+  }
+}
+
+/** No account, no server: the service worker calls the user's own provider. */
+async function runDirectEnhance(inputText, route) {
+  return new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: "pm-stream" });
+    let parts = [];
+    let settled = false;
+
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      try { port.disconnect(); } catch { /* already closed */ }
+      fn();
+      resolve();
+    };
+
+    port.onMessage.addListener((msg) => {
+      if (msg.type === "token") {
+        parts.push(msg.token);
+        updateStreamingText(parts.join(""));
+      } else if (msg.type === "done") {
+        finish(() => {
+          lastEnhanceResult = {
+            original: inputText,
+            enhanced: msg.enhanced,
+            log_id: null,          // nothing is logged in direct mode
+            latency: null,
+            mode: currentMode,
+            direct: true,
+            model: msg.model,
+          };
+          finalizeStreamingModal(lastEnhanceResult);
+        });
+      } else if (msg.type === "error") {
+        finish(() => failStreamingModal(msg.error));
+      }
+    });
+
+    // If the worker dies mid-flight the modal must not spin forever.
+    port.onDisconnect.addListener(() => {
+      finish(() => failStreamingModal("Connection to the extension worker was lost."));
+    });
+
+    port.postMessage({ type: "PM_ENHANCE_STREAM", prompt: inputText, mode: currentMode });
+  });
+}
+
+/** Signed in: go through the backend so memory features still apply. */
+async function runBackendEnhance(inputText) {
+  let parts = [];
+  let finished = false;
 
   await enhancePromptStream(
     inputText,
     Array.from(selectedIds),
-    // onToken
     (token) => {
-      enhancedParts.push(token);
-      updateStreamingText(enhancedParts.join(""));
+      parts.push(token);
+      updateStreamingText(parts.join(""));
     },
-    // onDone
     (metadata) => {
-      const enhanced = enhancedParts.join("");
+      finished = true;
+      // The backend now reports failure explicitly. Without this check a dead
+      // model produced an empty stream, a done event, and a modal that
+      // cheerfully presented nothing as the finished enhancement.
+      if (metadata.failed || !parts.length) {
+        failStreamingModal(
+          metadata.detail || metadata.error ||
+          "The enhancement came back empty. Please try again."
+        );
+        return;
+      }
       lastEnhanceResult = {
         original: inputText,
-        enhanced: enhanced,
+        enhanced: parts.join(""),
         log_id: metadata.log_id,
         latency: metadata.latency,
         mode: metadata.mode,
+        model: metadata.model,
         context_used: metadata.context_used,
       };
       finalizeStreamingModal(lastEnhanceResult);
-      // Increment local usage counter
-      usageData.count++;
+
+      if (metadata.usage_today) {
+        usageData.count = metadata.usage_today.used;
+        usageData.limit = metadata.usage_today.limit;
+      } else {
+        usageData.count++;
+      }
       updateUsageBar();
     }
   );
 
-  if (btn) {
-    btn.disabled = false;
-    btn.textContent = "Enhance Current Prompt";
+  // enhancePromptStream returns without ever invoking onDone if the request
+  // itself threw. Leaving the modal on "Enhancing..." forever was the visible
+  // symptom of every backend outage.
+  if (!finished) {
+    failStreamingModal("Could not reach the server. Check your connection and try again.");
   }
+}
+
+/** Ask the service worker something; resolves to null if it is unreachable. */
+function askWorker(message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn("Prompt Memory: worker unreachable", chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+        resolve(response);
+      });
+    } catch (e) {
+      console.warn("Prompt Memory: worker call failed", e);
+      resolve(null);
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1201,6 +1350,115 @@ function updateStreamingText(text) {
 function finalizeStreamingModal(result) {
   // Re-render as the full diff modal with all buttons
   showDiffModal(result);
+}
+
+/**
+ * Turn the streaming modal into a readable failure.
+ *
+ * Every failure path used to leave the modal showing "Enhancing..." with an
+ * empty body: the SSE reader logged errors to the console and returned, and
+ * onDone was never called. From the user's side an outage and a slow response
+ * were indistinguishable, and neither ever resolved.
+ */
+function failStreamingModal(message) {
+  const overlay = document.getElementById("pm-modal-overlay");
+  if (!overlay) {
+    showToast(message, "error");
+    return;
+  }
+  const modal = overlay.querySelector(".pm-modal");
+  if (!modal) return;
+
+  const needsKey = /key|limit|sign|quota/i.test(message || "");
+
+  modal.innerHTML = `
+    <div class="pm-modal-header">
+      <span class="pm-modal-title">Couldn't enhance</span>
+      <button class="pm-header-close pm-modal-close-btn">×</button>
+    </div>
+    <div class="pm-modal-body">
+      <div class="pm-error-box">
+        <div class="pm-error-icon">⚠️</div>
+        <div class="pm-error-text">${escHtml(message || "Something went wrong.")}</div>
+      </div>
+      <div class="pm-error-hint">Your original text is untouched — nothing was replaced.</div>
+    </div>
+    <div class="pm-modal-footer">
+      ${needsKey ? `<button class="pm-btn pm-btn-secondary" id="pm-open-settings">Open settings</button>` : ""}
+      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Close</button>
+      <button class="pm-btn pm-btn-primary" id="pm-retry-enhance">Try again</button>
+    </div>
+  `;
+
+  modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
+    b.addEventListener("click", closeModal)
+  );
+  modal.querySelector("#pm-retry-enhance")?.addEventListener("click", () => {
+    closeModal();
+    handleEnhance();
+  });
+  modal.querySelector("#pm-open-settings")?.addEventListener("click", () => {
+    closeModal();
+    showSetupRequiredModal();
+  });
+}
+
+/**
+ * Shown when the user has neither an account nor an API key.
+ *
+ * Leads with the no-account option deliberately: it is the faster path to a
+ * working enhancement, and the free tier a user gets on their own key
+ * (1,000 requests/day on Groq) is far larger than the shared server allowance
+ * we can afford to give them.
+ */
+function showSetupRequiredModal() {
+  const overlay = getOrCreateModalOverlay();
+  const modal = overlay.querySelector(".pm-modal");
+
+  modal.innerHTML = `
+    <div class="pm-modal-header">
+      <span class="pm-modal-title">One-time setup</span>
+      <button class="pm-header-close pm-modal-close-btn">×</button>
+    </div>
+    <div class="pm-modal-body">
+      <p class="pm-setup-intro">Prompt Memory needs an AI model to rewrite your prompts. Pick either option — both are free.</p>
+
+      <div class="pm-setup-option pm-setup-option-primary">
+        <div class="pm-setup-badge">Recommended · no account needed</div>
+        <div class="pm-setup-title">Use your own free Groq key</div>
+        <div class="pm-setup-desc">
+          Takes about a minute. Free, no credit card, and it gives you
+          <strong>1,000 enhancements a day</strong> instead of the 15 we can
+          share. Your prompts go straight from your browser to Groq — they never
+          touch our server.
+        </div>
+        <button class="pm-btn pm-btn-primary" id="pm-setup-byok">Add my key</button>
+      </div>
+
+      <div class="pm-setup-option">
+        <div class="pm-setup-title">Or sign in with Google</div>
+        <div class="pm-setup-desc">
+          Uses our shared key — capped at 15 enhancements a day — and unlocks
+          saved prompts, history, and context from your past prompts.
+        </div>
+        <button class="pm-btn pm-btn-secondary" id="pm-setup-signin">Sign in</button>
+      </div>
+    </div>
+  `;
+
+  modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
+    b.addEventListener("click", closeModal)
+  );
+  // A content script cannot open the popup programmatically, so point the user
+  // at the toolbar icon rather than firing an action that silently does nothing.
+  modal.querySelector("#pm-setup-byok")?.addEventListener("click", () => {
+    closeModal();
+    showToast("Click the Prompt Memory icon in your toolbar to add your key.", "info");
+  });
+  modal.querySelector("#pm-setup-signin")?.addEventListener("click", () => {
+    closeModal();
+    showToast("Click the Prompt Memory icon in your toolbar to sign in.", "info");
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
