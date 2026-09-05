@@ -7,6 +7,33 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 
+def _normalise_qdrant_url(raw: str) -> str:
+    """
+    Add Qdrant Cloud's REST port when it is missing.
+
+    Qdrant Cloud serves REST on :6333, but the console shows a bare hostname, so
+    it is natural to paste it without one. The resulting failure is silent and
+    deeply misleading: the client constructs fine and reports connected, then
+    every operation fails with "connection reset by peer" because 443 is not the
+    API port. Those errors are caught and turned into empty results, so the
+    saved-prompt library appears to save correctly and simply never matches
+    anything — which is exactly how it behaved in production.
+
+    Narrow on purpose: only a *.cloud.qdrant.io host with no port and no path is
+    rewritten, so a deliberate proxy on another port is left alone.
+    """
+    url = (raw or "").strip()
+    if not url or url == ":memory:" or "://" not in url:
+        return url
+    scheme, _, rest = url.partition("://")
+    if "/" in rest:
+        return url
+    host = rest
+    if ":" in host or not host.endswith(".cloud.qdrant.io"):
+        return url
+    return f"{scheme}://{host}:6333"
+
+
 class Settings:
     # Environment: "development" or "production"
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -19,7 +46,7 @@ class Settings:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     MONGO_URI = os.getenv("MONGO_URI")
-    QDRANT_URL = os.getenv("QDRANT_URL", ":memory:")
+    QDRANT_URL = _normalise_qdrant_url(os.getenv("QDRANT_URL", ":memory:"))
     QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
     SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
     
