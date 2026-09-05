@@ -140,7 +140,25 @@ class QdrantDB:
 
         Deliberately reports no URL or key.
         """
-        out = {"connected": False, "collections": {}, "error": None}
+        # Structural facts about the configured URL, never the URL itself: a
+        # missing :6333 port is the most common cause of "connection reset by
+        # peer" against Qdrant Cloud, and it is indistinguishable from a dead
+        # cluster without knowing which of the two you are looking at.
+        raw = (settings.QDRANT_URL or "").strip()
+        host_part = raw.split("://")[-1]
+        out = {
+            "connected": False,
+            "collections": {},
+            "error": None,
+            "config": {
+                "configured": bool(raw) and raw != ":memory:",
+                "in_memory": raw == ":memory:",
+                "scheme": raw.split("://")[0] if "://" in raw else None,
+                "has_port": ":" in host_part.split("/")[0],
+                "looks_like_cloud": "cloud.qdrant.io" in raw,
+                "api_key_set": bool(settings.QDRANT_API_KEY),
+            },
+        }
         try:
             client = cls.get_client()
             if client is None:
