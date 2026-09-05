@@ -123,3 +123,41 @@ def test_extension_origins_match_the_manifest():
         f"only in config={set(settings.EXTENSION_ORIGINS) - set(from_manifest)}, "
         f"only in manifest={set(from_manifest) - set(settings.EXTENSION_ORIGINS)}"
     )
+
+
+# ── the same guard, for the inline card that replaced the modal ──
+
+CARD_FNS = _function_bodies(CONTENT_JS, r"openCard|showDiffModal|showStreamingDiffModal|failStreamingModal")
+
+
+def test_card_functions_were_found():
+    assert "openCard" in CARD_FNS, "openCard not found — the guard below would be vacuous"
+
+
+def test_opening_the_card_makes_it_visible():
+    """
+    Same defect class as the invisible setup modal: .pm-card is opacity:0 until
+    pm-card-visible is added. Every path that shows the card goes through
+    openCard(), so that is the one place the class has to be applied.
+    """
+    assert "pm-card-visible" in CARD_FNS["openCard"], (
+        "openCard() builds and positions the card but never adds pm-card-visible, "
+        "so it is inserted fully transparent"
+    )
+
+
+def test_card_visibility_class_is_load_bearing():
+    assert re.search(r"\.pm-card\s*{[^}]*opacity:\s*0", STYLES_CSS, re.S)
+    assert re.search(r"\.pm-card\.pm-card-visible\s*{[^}]*opacity:\s*1", STYLES_CSS, re.S)
+
+
+def test_card_keymap_does_not_hijack_tab_when_closed():
+    """
+    Tab is the page's key, not ours. The handler must bail on idle state before
+    it ever calls preventDefault, or the extension breaks tab navigation
+    everywhere on six major sites.
+    """
+    handler = CONTENT_JS[CONTENT_JS.index('if (cardState === "idle") return;'):]
+    guard = CONTENT_JS.index('if (cardState === "idle") return;')
+    tab = CONTENT_JS.index('if (e.key === "Tab")', guard)
+    assert guard < tab, "the idle guard must precede the Tab handler"
