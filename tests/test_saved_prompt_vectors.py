@@ -50,6 +50,21 @@ class FakeQdrant:
         ]:
             store.pop(pid)
 
+    def query_points(self, collection_name, query, query_filter=None, limit=10, **kw):
+        """Returns every point matching the filter, scored 1.0 — the vector maths
+        is not what is under test here, the user_id scoping is."""
+        store = self.collections.setdefault(collection_name, {})
+        wanted = {}
+        if query_filter is not None:
+            for c in query_filter.kwargs["must"]:
+                wanted[c.kwargs["key"]] = c.kwargs["match"].kwargs["value"]
+        points = [
+            type("P", (), {"payload": payload, "score": 1.0, "id": pid})()
+            for pid, payload in store.items()
+            if all(payload.get(k) == v for k, v in wanted.items())
+        ]
+        return type("R", (), {"points": points[:limit]})()
+
     def ids(self, collection):
         return set(self.collections.get(collection, {}))
 
@@ -157,3 +172,44 @@ def test_secrets_are_redacted_before_embedding(qdrant):
     payload = next(iter(qdrant.collections[SAVED].values()))
     assert "sk-abcdef1234567890ABCDEF" not in payload["content"]
     assert "[REDACTED]" in payload["content"]
+
+
+# ── per-user scoping ──────────────────────────────────────────────────────
+# Saved prompts are private. A search that ignored user_id would splice one
+# customer's client notes into another's prompt, which is a confidentiality
+# failure rather than a bug — and invisible, because the leaked text arrives
+# as "context" the user never sees.
+
+def test_search_never_returns_another_users_prompt(qdrant):
+    MemoryService.embed_saved_prompt("alice", MONGO_ID, "Alice's client playbook", "Alice", [])
+    MemoryService.embed_saved_prompt("bob", "68b9f2c1e4a37d0091ab2f5f", "Bob's checklist", "Bob", [])
+
+    for user, expected in (("alice", "Alice"), ("bob", "Bob")):
+        hits = MemoryService.search_saved_prompts(user, "anything at all", limit=10)
+        titles = {h["title"] for h in hits}
+        assert titles == {expected}, f"{user} saw {titles}"
+
+
+def test_a_user_with_nothing_saved_sees_nothing(qdrant):
+    """
+    Asserts the positive case as well, deliberately. A test that only checked
+    "the stranger sees nothing" would pass against a completely broken search —
+    search_saved_prompts() catches every exception and returns [], so "nothing
+    leaked" and "nothing works" are the same observation. The owner's own hit is
+    what makes the empty result mean something.
+    """
+    MemoryService.embed_saved_prompt("alice", MONGO_ID, "Alice's playbook", "Alice", [])
+
+    assert MemoryService.search_saved_prompts("alice", "playbook", limit=10), \
+        "search returned nothing for the owner — the isolation check below is vacuous"
+    assert MemoryService.search_saved_prompts("stranger", "playbook", limit=10) == []
+
+
+def test_purge_is_scoped_to_one_user(qdrant):
+    MemoryService.embed_saved_prompt("alice", MONGO_ID, "Alice's playbook", "Alice", [])
+    MemoryService.embed_saved_prompt("bob", "68b9f2c1e4a37d0091ab2f5f", "Bob's checklist", "Bob", [])
+
+    MemoryService.purge_user_vectors("bob")
+
+    assert {h["title"] for h in MemoryService.search_saved_prompts("alice", "x", limit=10)} == {"Alice"}
+    assert MemoryService.search_saved_prompts("bob", "x", limit=10) == []
