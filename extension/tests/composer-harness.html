@@ -141,6 +141,28 @@ try {
     stage.appendChild(ta);
     record("readonly textarea skipped", await applyToInput(ENHANCED), false);
   }
+
+  // Perplexity-shaped: a selection is not replaced by an insert, so writing
+  // over a full selection APPENDS. Reporting success here would leave the user
+  // with their prompt twice and the extension claiming it worked.
+  stage.innerHTML = "";
+  {
+    const el = mkCE(); el.textContent = ORIGINAL;
+    el.addEventListener("beforeinput", (e) => {
+      if (e.inputType === "insertText" || e.inputType === "insertReplacementText") {
+        e.preventDefault();
+        el.textContent = el.textContent + (e.data ?? "");   // append, never replace
+      }
+      if (e.inputType === "deleteContentBackward") { e.preventDefault(); }
+    });
+    el.addEventListener("paste", (e) => {
+      e.preventDefault();
+      el.textContent = el.textContent + e.clipboardData.getData("text/plain");
+    });
+    const returned = await applyToInput(ENHANCED);
+    const landed = el.textContent.trim() === ENHANCED;
+    record("append-only editor (duplication)", returned, landed);
+  }
 } catch (err) {
   document.getElementById("out").innerHTML =
     `<p class="fail">Harness could not run: ${err.message}</p>`;

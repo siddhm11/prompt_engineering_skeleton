@@ -2005,6 +2005,27 @@ function selectAllIn(el) {
 }
 
 /**
+ * Empty the composer before writing into it.
+ *
+ * Selecting the contents is not enough everywhere: on Perplexity an insert over
+ * a full selection appends rather than replaces, so the user ends up with their
+ * prompt twice. Deleting the selection first makes the write a replacement on
+ * every editor tested, and costs nothing where the selection would have been
+ * replaced anyway.
+ */
+function clearComposer(el) {
+  el.focus();
+  selectAllIn(el);
+  try {
+    if (document.execCommand("delete", false)) return;
+  } catch { /* fall through */ }
+  el.dispatchEvent(new InputEvent("beforeinput", {
+    bubbles: true, cancelable: true, inputType: "deleteContentBackward",
+  }));
+  if (norm(composerText(el))) el.textContent = "";
+}
+
+/**
  * Insertion strategies for rich-text composers, tried in order.
  *
  * Which one works depends on how the editor watches for changes, and the big
@@ -2048,7 +2069,19 @@ const INSERT_STRATEGIES = [
 function composerMatches(el, text) {
   const after = norm(composerText(el));
   const want = norm(text);
-  return after === want || (want.length > 40 && after.includes(want.slice(0, 40)));
+  if (after === want) return true;
+
+  // The tolerance below exists for editors that reflow whitespace, and it used
+  // to be `after.includes(want.slice(0, 40))`. That is true of DUPLICATED text
+  // too — and on Perplexity, selecting the composer's contents does not replace
+  // them, so an insert appends and the box ends up holding the message twice.
+  // The old check called that a success, which is precisely the failure this
+  // function exists to catch. Length has to stay in the same ballpark.
+  return (
+    want.length > 40 &&
+    after.startsWith(want.slice(0, 40)) &&
+    after.length <= Math.round(want.length * 1.15)
+  );
 }
 
 /**
@@ -2095,7 +2128,7 @@ async function applyToInput(text) {
     }
 
     for (const strategy of INSERT_STRATEGIES) {
-      el.focus();
+      clearComposer(el);
       selectAllIn(el);
       try {
         strategy(el, text);
