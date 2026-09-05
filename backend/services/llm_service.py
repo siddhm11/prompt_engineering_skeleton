@@ -180,6 +180,23 @@ def _encode_text(text: str):
 
 # LRU cache: avoids re-encoding the same prompt text multiple times
 @lru_cache(maxsize=256)
+def embedding_status() -> dict:
+    """
+    Whether the embedding model is actually usable.
+
+    This was unobservable, and its failure mode is silent in both directions:
+    get_embedding() returns None, embed_saved_prompt() then skips the write
+    without logging anything, and search_saved_prompts() returns no matches.
+    The visible result is a saved-prompt library that appears to save fine and
+    never matches anything — with no error anywhere to explain why.
+    """
+    return {
+        "model": settings.EMBEDDING_MODEL_NAME,
+        "loaded": _embedding_model is not None,
+        "unavailable": bool(_embedding_unavailable),
+    }
+
+
 def get_embedding(text: str):
     """Converts text to 384-dim vector using multilingual MiniLM-L12. Cached for repeated calls."""
     return _encode_text(text)

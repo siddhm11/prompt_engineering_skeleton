@@ -177,7 +177,12 @@ def llm_health():
     that kind is one HTTP call away from being diagnosed.
     """
     from .services.providers import pool_status
+    from .services.llm_service import embedding_status
     status = pool_status()
+
+    # Saved-prompt search and passive memory both depend on this, and both fail
+    # silently without it: nothing is written, nothing matches, nothing logs.
+    status["embedding"] = embedding_status()
     status["healthy"] = bool(status["chain"]) and any(
         p["keys_configured"] > 0 for p in status["providers"].values()
     )

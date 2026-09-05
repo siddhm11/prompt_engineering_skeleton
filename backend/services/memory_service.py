@@ -360,6 +360,12 @@ class MemoryService:
         try:
             content = redact_secrets(content)
             vec = get_embedding(content)
+            if not vec:
+                # Silent before. The prompt still saved to Mongo and appeared in
+                # the user's library, but no vector existed, so it could never
+                # be retrieved — a library that looks fine and never matches.
+                print("❌ Saved prompt NOT embedded: embedding model unavailable "
+                      f"(mongo_id={mongo_id}). Saved-prompt search will not find it.")
             if vec:
                 q_client = QdrantDB.get_client()
                 if q_client:
