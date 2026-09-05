@@ -33,6 +33,18 @@ class Settings:
     JWT_SECRET = os.getenv("JWT_SECRET", "unsafedefaultsecret")
     ALGORITHM = "HS256"
     
+    # Origins the extension's content script runs on. Must stay in sync with
+    # content_scripts.matches in extension/manifest.json — tests/
+    # test_extension_static.py asserts they do not drift apart.
+    EXTENSION_ORIGINS = [
+        "https://chatgpt.com",
+        "https://gemini.google.com",
+        "https://claude.ai",
+        "https://www.perplexity.ai",
+        "https://grok.com",
+        "https://x.com",
+    ]
+
     # CORS — comma-separated origins allowed in production
     # In development, all origins ("*") are allowed automatically
     FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "").split(",") if os.getenv("FRONTEND_ORIGINS") else []
@@ -44,9 +56,39 @@ class Settings:
     EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     COLLECTION_NAME = "prompt_memory"
 
-    # Rate Limiting
+    # Rate Limiting. Enforced per authenticated user by core.ratelimit, not by
+    # IP: the Space sits behind a proxy, so every request shares one source
+    # address and an IP-keyed limiter would throttle the whole user base as one.
     RATE_LIMIT_ENHANCE = os.getenv("RATE_LIMIT_ENHANCE", "30/minute")
     RATE_LIMIT_VOICE = os.getenv("RATE_LIMIT_VOICE", "10/minute")
+
+    # Largest request body accepted, before auth runs. A 20 MB unauthenticated
+    # POST was previously parsed in full and only then rejected with a 401.
+    MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
+
+    # Voice uploads are audio and legitimately exceed the general cap: ~2.3 MB
+    # for ten minutes of 32 kbps opus, and half that duration at 64 kbps. A flat
+    # 2 MB limit would have started rejecting real recordings with an opaque 413.
+    MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(25 * 1024 * 1024)))
+
+    # Routes allowed the larger body. Prefix match.
+    LARGE_BODY_ROUTES = ("/voice-enhance",)
+
+    # Prompt-log retention, in days. 0 (the default) disables expiry.
+    #
+    # Deliberately OFF by default. A TTL index is applied by the database the
+    # moment it is created, so shipping a 90-day default would have silently
+    # and irreversibly deleted every prompt log older than 90 days on the first
+    # boot after deploy — this project has logs going back to January. Enabling
+    # retention is a decision with data loss attached, so it has to be made
+    # explicitly, not inherited from a default.
+    #
+    # Set PROMPT_LOG_TTL_DAYS=90 once you have decided that is what you want.
+    PROMPT_LOG_TTL_DAYS = int(os.getenv("PROMPT_LOG_TTL_DAYS", "0"))
+
+    # Expose /docs and /openapi.json. Off in production: they enumerate every
+    # route on a publicly reachable backend.
+    ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
 
     # Model selection lives in services/providers.py as an ordered fallback
     # chain, not here. Pinning a single model id in config is what caused the
@@ -79,7 +121,18 @@ class Settings:
 
     @property
     def is_production(self) -> bool:
-        return self.ENVIRONMENT.lower() == "production"
+        """
+        Whitespace- and quote-tolerant on purpose.
+
+        This was `self.ENVIRONMENT.lower() == "production"`. A value of
+        "production " — a trailing space picked up from a hosting panel's env
+        editor — evaluated to False and silently reverted CORS to allow-all and
+        re-exposed /docs, with nothing anywhere reporting that production mode
+        was off. A config typo should not quietly disable every hardening
+        measure, so the comparison is now forgiving and the current environment
+        is reported by the health endpoint.
+        """
+        return (self.ENVIRONMENT or "").strip().strip("\"'").lower() == "production"
 
     def validate(self):
         """Run safety checks. Call on startup."""
@@ -91,10 +144,31 @@ class Settings:
             print("=" * 60 + "\n")
             sys.exit(1)
 
-        if self.is_production and not self.FRONTEND_ORIGINS:
-            print("⚠️  WARNING: No FRONTEND_ORIGINS set in production. CORS will block all cross-origin requests.")
-            print("   Set FRONTEND_ORIGINS in .env (comma-separated), e.g.:")
-            print("   FRONTEND_ORIGINS=https://yoursite.com,chrome-extension://your-extension-id")
+        # The extension's content script calls /enhance, /track, /saved-prompts
+        # and friends directly from the chat page, so those requests carry the
+        # CHAT SITE as their Origin — not the extension id. In production
+        # cors_origins is exactly FRONTEND_ORIGINS, so any of these missing
+        # means every enhancement from that platform is CORS-blocked, which
+        # presents as "the product silently stopped working" rather than as a
+        # configuration error. Popup and service-worker calls are unaffected:
+        # those get extension privileges via host_permissions and bypass CORS.
+        if self.is_production:
+            configured = {o.strip().rstrip("/") for o in self.FRONTEND_ORIGINS if o.strip()}
+            missing = [o for o in self.EXTENSION_ORIGINS if o not in configured]
+            if not configured:
+                print("\n" + "=" * 60)
+                print("⚠️  FRONTEND_ORIGINS is empty in production.")
+                print("   CORS will block EVERY request the extension makes from a chat page.")
+                print(f"   FRONTEND_ORIGINS={','.join(self.EXTENSION_ORIGINS)}")
+                print("=" * 60 + "\n")
+            elif missing:
+                print("\n" + "=" * 60)
+                print("⚠️  FRONTEND_ORIGINS is missing platforms the extension runs on.")
+                print("   Enhancement will fail with a CORS error on:")
+                for o in missing:
+                    print(f"     - {o}")
+                print(f"   Full list: FRONTEND_ORIGINS={','.join(self.EXTENSION_ORIGINS)}")
+                print("=" * 60 + "\n")
 
     @property
     def cors_origins(self) -> list:
@@ -102,5 +176,15 @@ class Settings:
         if not self.is_production:
             return ["*"]
         return [o.strip() for o in self.FRONTEND_ORIGINS if o.strip()]
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        """
+        Always False. Auth travels in an Authorization header, never a cookie,
+        so credentialed CORS buys nothing — and pairing it with allow_origins
+        ["*"] made Starlette reflect whichever Origin asked, which is the one
+        combination the spec forbids.
+        """
+        return False
 
 settings = Settings()

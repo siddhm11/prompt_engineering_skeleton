@@ -34,13 +34,28 @@ let isRecording = false;
 let enhanceHistory = [];
 let usageData = { count: 0, limit: 30 };
 let isLoadingTab = false;
-let promptTrackingEnabled = true;  // Passive prompt tracking — user can opt out
-let contextEnabled = true;          // Conversation context reading — user can opt out
+// Passive prompt tracking: records every prompt the user submits on these
+// sites, whether or not they ever press Enhance, and keeps it server-side.
+//
+// This defaulted to ON with no disclosure anywhere in the product. Chrome Web
+// Store's Limited Use disclosure requirements have been enforceable since
+// 1 Aug 2026 and require prominent disclosure plus affirmative consent before
+// collecting this kind of data — silent opt-out collection is a rejection at
+// review, and a trust problem well before that for anyone drafting client work.
+//
+// Opt-in now. Nothing is collected until the user turns it on themselves.
+let promptTrackingEnabled = false;
+
+// Conversation context is different in kind: it is read from the page only
+// while fulfilling an enhancement the user explicitly asked for, is sent for
+// that one request, and is not retained as a profile. It stays on by default
+// and is disclosed and toggleable in the panel.
+let contextEnabled = true;
 
 // Load privacy preferences
 chrome.storage.local.get(["pm_tracking", "pm_context"], (result) => {
-  promptTrackingEnabled = result.pm_tracking !== false;  // default: true
-  contextEnabled = result.pm_context !== false;          // default: true
+  promptTrackingEnabled = result.pm_tracking === true;   // default: OFF
+  contextEnabled = result.pm_context !== false;          // default: on
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -335,24 +350,32 @@ function scrapeConversation() {
         }
       });
     } else if (hostname === "gemini.google.com") {
+      // Gemini distinguishes the two sides in the DOM, so tag them. Emitting
+      // "[message]" for both threw that information away — see below.
       document.querySelectorAll("message-content, .model-response-text, .query-text").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
-          messages.push(`[message]: ${text.substring(0, 500)}`);
+          const isUser = el.classList.contains("query-text") || el.closest(".query-text");
+          messages.push(`[${isUser ? "user" : "assistant"}]: ${text.substring(0, 500)}`);
         }
       });
     } else if (hostname === "grok.com" || hostname === "x.com") {
       document.querySelectorAll("[class*='message'], [class*='Message'], [data-testid*='message'], [class*='response'], [class*='query']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
-          messages.push(`[message]: ${text.substring(0, 500)}`);
+          const cls = `${el.className || ""} ${el.getAttribute("data-testid") || ""}`.toLowerCase();
+          const isUser = cls.includes("query") || cls.includes("user") || cls.includes("human");
+          messages.push(`[${isUser ? "user" : "assistant"}]: ${text.substring(0, 500)}`);
         }
       });
     } else {
       document.querySelectorAll("[class*='message'], [class*='Message'], [role='presentation']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 5 && text.length < 2000) {
-          messages.push(text.substring(0, 500));
+          // Genuinely unknown role on an unrecognised site. Tag it explicitly
+          // rather than pushing bare text, so the backend can tell the
+          // difference between "not a user message" and "role unknown".
+          messages.push(`[unknown]: ${text.substring(0, 500)}`);
         }
       });
     }
@@ -373,8 +396,14 @@ function createTrigger() {
   btn.id = "pm-trigger";
   btn.className = "pm-trigger";
   btn.innerHTML = "⊕";
-  btn.title = "Prompt Memory (Ctrl+Shift+E to enhance)";
-  btn.addEventListener("click", () => togglePanel());
+  btn.title = "Enhance this prompt (Ctrl+Shift+E)\nShift-click for your library";
+  // Click runs the thing people came for. This used to open the panel, which
+  // meant the primary action sat two clicks deep behind a tab bar; the library
+  // is the secondary path now, not the front door.
+  btn.addEventListener("click", (e) => {
+    if (e.shiftKey) togglePanel();
+    else handleEnhance();
+  });
   document.body.appendChild(btn);
 
   // Apply saved theme to trigger
@@ -415,6 +444,11 @@ function setupKeyboardShortcut() {
     } else if (e.code === "KeyV") {
       e.preventDefault();
       toggleVoice();
+    } else if (e.code === "KeyL") {
+      // The library, now that the trigger button runs an enhancement instead
+      // of opening the panel.
+      e.preventDefault();
+      togglePanel();
     }
   });
 }
@@ -509,7 +543,7 @@ function createPanel() {
   const trackToggle = document.getElementById("pm-tracking-toggle");
   const ctxToggle = document.getElementById("pm-context-toggle");
   chrome.storage.local.get(["pm_tracking", "pm_context"], (result) => {
-    trackToggle.checked = result.pm_tracking !== false;
+    trackToggle.checked = result.pm_tracking === true;   // default: OFF
     ctxToggle.checked = result.pm_context !== false;
   });
   trackToggle.addEventListener("change", () => {
@@ -699,7 +733,13 @@ function renderSkeleton(count = 3) {
 
 async function fetchUsage() {
   try {
-    const res = await authedFetch(`${API_URL}/enhance/usage`);
+    // /enhance rations on effective_tier(), which promotes a request carrying
+    // the user's own key to the byok tier. This endpoint had no way to know
+    // that and reported the free-tier limit, so a BYOK user watched a "12/15"
+    // bar fill up while the server was actually allowing them 1,000.
+    const route = await askWorker({ type: "PM_GET_ROUTE" });
+    const qs = route?.hasKey ? "?byok=true" : "";
+    const res = await authedFetch(`${API_URL}/enhance/usage${qs}`);
     if (!res) return;
     const data = await res.json();
     usageData = { count: data.count || 0, limit: data.limit || 30 };
@@ -975,8 +1015,7 @@ function renderHistoryTab(container) {
       `;
 
       card.querySelector(".pm-history-use").addEventListener("click", () => {
-        applyToInput(item.enhanced);
-        showToast("Prompt applied to input!", "success");
+        applyOrFallback(item.enhanced);
       });
 
       card.querySelector(".pm-history-copy").addEventListener("click", () => {
@@ -1133,7 +1172,27 @@ function loadRecentFeedback() {
 // ENHANCE HANDLER (streaming)
 // ══════════════════════════════════════════════════════════════
 
+/** Open the extension's own settings UI. */
+function openSettings() {
+  chrome.runtime.sendMessage({ type: "PM_OPEN_OPTIONS" }, () => {
+    if (chrome.runtime.lastError) {
+      showToast("Click the Prompt Memory icon in your toolbar to open settings.", "info");
+    }
+  });
+}
+
+// Guards against a second enhancement starting while one is in flight. Two
+// concurrent streams wrote into the same modal and the same composer, and on
+// the shared key that burned two of a user's fifteen daily enhancements for
+// one result.
+let enhanceInFlight = false;
+
 async function handleEnhance() {
+  if (enhanceInFlight) {
+    showToast("Already enhancing — hang on a moment.", "info");
+    return;
+  }
+
   const inputText = getCurrentInputText();
   if (!inputText || inputText.trim().length < 3) {
     showToast("Type a prompt in the chat input first.", "error");
@@ -1148,6 +1207,14 @@ async function handleEnhance() {
     // orphaned by an extension update or reload — the page needs refreshing,
     // which is a different problem from "you have not set anything up yet".
     showToast("Prompt Memory was updated — please reload this page.", "error");
+    return;
+  }
+  if (route.route === "expired") {
+    // Signed in at some point, token past its 7-day life, and no API key to
+    // fall back on. Previously this routed at the backend anyway and produced
+    // an unexplained failure on every attempt.
+    showToast("Your session expired — please sign in again.", "error");
+    openSettings();
     return;
   }
   if (route.route === "none") {
@@ -1165,6 +1232,7 @@ async function handleEnhance() {
     btn.textContent = "Enhancing...";
   }
 
+  enhanceInFlight = true;
   showStreamingDiffModal(inputText);
 
   try {
@@ -1177,6 +1245,7 @@ async function handleEnhance() {
     console.error("Prompt Memory: enhance failed", err);
     failStreamingModal(err?.message || "Enhancement failed. Please try again.");
   } finally {
+    enhanceInFlight = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = "Enhance Current Prompt";
@@ -1306,111 +1375,242 @@ function askWorker(message) {
 // STREAMING DIFF MODAL — Shows tokens arriving in real-time
 // ══════════════════════════════════════════════════════════════
 
-function showStreamingDiffModal(originalText) {
-  const overlay = getOrCreateModalOverlay();
-  const modal = overlay.querySelector(".pm-modal");
+// ══════════════════════════════════════════════════════════════
+// INLINE REWRITE CARD
+// ══════════════════════════════════════════════════════════════
+//
+// This replaces the diff modal for the whole enhance flow. The modal blacked
+// out the conversation to present a three-line rewrite, spent half its area
+// echoing back the prompt the user typed four seconds earlier, and offered
+// four buttons (Discard / Copy / Save / Use This Prompt) for what is a binary
+// decision — with "Discard" rendering clipped behind "Copy".
+//
+// The card anchors to the composer instead, so the conversation stays readable
+// while you judge a rewrite that is supposed to fit it, and the decision is two
+// keys: Tab accepts, Esc dismisses.
+//
+// The four entry points below keep the names the streaming flow already calls,
+// so runBackendEnhance/runDirectEnhance are untouched.
 
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Enhancing...</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body pm-diff-body">
-      <div class="pm-diff-section" id="pm-diff-original-section">
-        <div class="pm-diff-label-row">
-          <div class="pm-diff-label">Original</div>
-        </div>
-        <div class="pm-diff-original">${escHtml(originalText)}</div>
-      </div>
-      <div class="pm-diff-arrow">↓ enhancing in ${currentMode} mode...</div>
-      <div class="pm-diff-section">
-        <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
-        <div class="pm-diff-enhanced pm-streaming" id="pm-stream-target"><span class="pm-cursor">▊</span></div>
-      </div>
-    </div>
-    <div class="pm-modal-footer">
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Cancel</button>
-    </div>
-  `;
+let cardState = "idle";        // idle | streaming | ready | error
+let cardResult = null;
+let cardShowingOriginal = false;
+let cardOriginal = "";
+let cardReposition = null;
 
-  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
-  );
+function getOrCreateCard() {
+  let card = document.getElementById("pm-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "pm-card";
+    card.className = "pm-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Enhanced prompt");
+    document.body.appendChild(card);
 
-  overlay.classList.add("pm-visible");
+    chrome.storage.local.get("pm_theme", (r) =>
+      card.setAttribute("data-pm-theme", r.pm_theme || "dark")
+    );
+  }
+  return card;
 }
 
+/**
+ * Sit the card directly above the composer.
+ *
+ * Anchored rather than centred because the composer is where the user is
+ * already looking, and because a rewrite has to be judged against the
+ * conversation it belongs to — which a centred overlay hides.
+ */
+function positionCard() {
+  const card = document.getElementById("pm-card");
+  const composer = findComposer();
+  if (!card || !composer) return;
+
+  const box = composer.getBoundingClientRect();
+  const gap = 10;
+  const margin = 12;
+
+  const width = Math.min(Math.max(box.width, 380), 620);
+  let left = box.left + (box.width - width) / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+
+  card.style.width = width + "px";
+  card.style.left = left + "px";
+
+  // Prefer above the composer; fall back below when there is no room up top.
+  const height = card.offsetHeight || 160;
+  const above = box.top - gap - height;
+  card.style.top = (above >= margin ? above : Math.min(box.bottom + gap, window.innerHeight - height - margin)) + "px";
+}
+
+function openCard(innerHTML) {
+  const card = getOrCreateCard();
+  card.innerHTML = innerHTML;
+  positionCard();
+  requestAnimationFrame(() => card.classList.add("pm-card-visible"));
+
+  if (!cardReposition) {
+    cardReposition = () => positionCard();
+    window.addEventListener("resize", cardReposition, true);
+    window.addEventListener("scroll", cardReposition, true);
+  }
+  return card;
+}
+
+function closeCard() {
+  const card = document.getElementById("pm-card");
+  if (card) {
+    card.classList.remove("pm-card-visible");
+    card.remove();
+  }
+  if (cardReposition) {
+    window.removeEventListener("resize", cardReposition, true);
+    window.removeEventListener("scroll", cardReposition, true);
+    cardReposition = null;
+  }
+  cardState = "idle";
+  cardResult = null;
+  cardShowingOriginal = false;
+}
+
+function cardFoot(parts) {
+  return `<div class="pm-card-foot">${parts.join("")}</div>`;
+}
+
+const cardKey = (k) => `<span class="pm-card-key">${k}</span>`;
+
+// ── Entry point 1: the flow is starting ──
+function showStreamingDiffModal(originalText) {
+  cardOriginal = originalText;
+  cardState = "streaming";
+  cardShowingOriginal = false;
+  openCard(
+    `<div class="pm-card-text" id="pm-stream-target"><span class="pm-card-cursor"></span></div>` +
+    cardFoot([
+      `<button class="pm-card-act" id="pm-card-cancel">${cardKey("esc")} cancel</button>`,
+      `<span class="pm-card-spacer"></span>`,
+      `<span class="pm-card-meta">rewriting…</span>`,
+    ])
+  );
+  document.getElementById("pm-card-cancel")?.addEventListener("click", closeCard);
+}
+
+// ── Entry point 2: tokens arriving ──
 function updateStreamingText(text) {
   const target = document.getElementById("pm-stream-target");
-  if (target) {
-    target.innerHTML = escHtml(text) + '<span class="pm-cursor">▊</span>';
-  }
+  if (!target) return;
+  target.innerHTML = escHtml(text) + '<span class="pm-card-cursor"></span>';
+  positionCard();
 }
 
+// ── Entry point 3: finished ──
 function finalizeStreamingModal(result) {
-  // Re-render as the full diff modal with all buttons
   showDiffModal(result);
 }
 
-/**
- * Turn the streaming modal into a readable failure.
- *
- * Every failure path used to leave the modal showing "Enhancing..." with an
- * empty body: the SSE reader logged errors to the console and returned, and
- * onDone was never called. From the user's side an outage and a slow response
- * were indistinguishable, and neither ever resolved.
- */
+// ── Entry point 4: failed ──
 function failStreamingModal(message) {
-  const overlay = document.getElementById("pm-modal-overlay");
-  if (!overlay) {
-    showToast(message, "error");
-    return;
-  }
-  const modal = overlay.querySelector(".pm-modal");
-  if (!modal) return;
-
-  const needsKey = /key|limit|sign|quota/i.test(message || "");
-
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Couldn't enhance</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body">
-      <div class="pm-error-box">
-        <div class="pm-error-icon">⚠️</div>
-        <div class="pm-error-text">${escHtml(message || "Something went wrong.")}</div>
-      </div>
-      <div class="pm-error-hint">Your original text is untouched — nothing was replaced.</div>
-    </div>
-    <div class="pm-modal-footer">
-      ${needsKey ? `<button class="pm-btn pm-btn-secondary" id="pm-open-settings">Open settings</button>` : ""}
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Close</button>
-      <button class="pm-btn pm-btn-primary" id="pm-retry-enhance">Try again</button>
-    </div>
-  `;
-
-  modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
+  cardState = "error";
+  openCard(
+    `<div class="pm-card-text pm-card-error">${escHtml(message)}</div>` +
+    cardFoot([
+      `<button class="pm-card-act" id="pm-card-retry">${cardKey("\u2318\u21B5")} try again</button>`,
+      `<button class="pm-card-act" id="pm-card-dismiss">${cardKey("esc")} dismiss</button>`,
+    ])
   );
-  modal.querySelector("#pm-retry-enhance")?.addEventListener("click", () => {
-    closeModal();
-    handleEnhance();
-  });
-  modal.querySelector("#pm-open-settings")?.addEventListener("click", () => {
-    closeModal();
-    showSetupRequiredModal();
-  });
+  document.getElementById("pm-card-retry")?.addEventListener("click", () => { closeCard(); handleEnhance(); });
+  document.getElementById("pm-card-dismiss")?.addEventListener("click", closeCard);
 }
 
-/**
- * Shown when the user has neither an account nor an API key.
- *
- * Leads with the no-account option deliberately: it is the faster path to a
- * working enhancement, and the free tier a user gets on their own key
- * (1,000 requests/day on Groq) is far larger than the shared server allowance
- * we can afford to give them.
- */
+/** The finished state. Named showDiffModal because several other flows
+ *  (voice, re-enhance, feedback) already call it. */
+function showDiffModal(result) {
+  cardResult = result;
+  cardState = "ready";
+  lastEnhanceResult = result;
+
+  const body = cardShowingOriginal
+    ? `<div class="pm-card-text pm-card-original">${escHtml(result.original || cardOriginal)}</div>`
+    : `<div class="pm-card-text">${escHtml(result.enhanced)}</div>`;
+
+  // Only shown when a saved prompt actually shaped the rewrite. The old footer
+  // printed four zeros on every result, which teaches people to stop reading it.
+  let chip = "";
+  const matched = result.context_details?.auto_matched_prompts?.[0];
+  const selectedCount = result.context_used?.selected || 0;
+  if (!cardShowingOriginal && matched) {
+    const label = (matched.title || "saved prompt").slice(0, 48);
+    chip = `<div class="pm-card-chip" title="This rewrite drew on a saved prompt">\u21B3 ${escHtml(label)}</div>`;
+  } else if (!cardShowingOriginal && selectedCount > 0) {
+    chip = `<div class="pm-card-chip">\u21B3 ${selectedCount} selected</div>`;
+  }
+
+  const truncatedNote = result.truncated
+    ? `<span class="pm-card-meta" style="color:var(--pm-danger)">cut short</span>`
+    : `<span class="pm-card-meta">${result.latency ? result.latency + "s" : ""}</span>`;
+
+  openCard(
+    body + chip +
+    cardFoot([
+      `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`,
+      `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
+      `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
+      `<button class="pm-card-act" id="pm-card-save">${cardKey("\u2318S")} save</button>`,
+      `<span class="pm-card-spacer"></span>`,
+      truncatedNote,
+    ])
+  );
+
+  document.getElementById("pm-card-accept")?.addEventListener("click", acceptCard);
+  document.getElementById("pm-card-close")?.addEventListener("click", closeCard);
+  document.getElementById("pm-card-toggle")?.addEventListener("click", () => {
+    cardShowingOriginal = !cardShowingOriginal;
+    showDiffModal(cardResult);
+  });
+  document.getElementById("pm-card-save")?.addEventListener("click", saveCard);
+}
+
+/** Write the rewrite into the composer. */
+async function acceptCard() {
+  if (cardState !== "ready" || !cardResult) return;
+  const text = cardShowingOriginal ? (cardResult.original || cardOriginal) : cardResult.enhanced;
+  const result = cardResult;
+  closeCard();
+  const applied = await applyOrFallback(text, "Applied");
+  if (applied) showFeedbackToast(result);
+}
+
+async function saveCard() {
+  if (!cardResult) return;
+  const ok = await createSavedPrompt(cardResult.enhanced, null, []);
+  showToast(ok ? "Saved to your library" : "Could not save", ok ? "success" : "error");
+  if (ok) fetchSavedPrompts();
+}
+
+// ── Keymap ──
+// Only active while the card is open, so Tab keeps its normal meaning
+// everywhere else on the page.
+document.addEventListener("keydown", (e) => {
+  if (cardState === "idle") return;
+  const card = document.getElementById("pm-card");
+  if (!card) return;
+
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCard(); return; }
+  if (cardState !== "ready") return;
+
+  if (e.key === "Tab") { e.preventDefault(); e.stopPropagation(); acceptCard(); return; }
+  if (e.key === "\\") {
+    e.preventDefault(); e.stopPropagation();
+    cardShowingOriginal = !cardShowingOriginal;
+    showDiffModal(cardResult);
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+    e.preventDefault(); e.stopPropagation(); saveCard(); return;
+  }
+}, true);
+
 function showSetupRequiredModal() {
   const overlay = getOrCreateModalOverlay();
   const modal = overlay.querySelector(".pm-modal");
@@ -1449,124 +1649,32 @@ function showSetupRequiredModal() {
   modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
     b.addEventListener("click", closeModal)
   );
-  // A content script cannot open the popup programmatically, so point the user
-  // at the toolbar icon rather than firing an action that silently does nothing.
+  // A content script still cannot open the ACTION popup — but it can ask the
+  // service worker to open the options page, which is the same UI. These two
+  // buttons used to close the modal and tell the user to go find the toolbar
+  // icon themselves, which is a dead end at the exact moment they had agreed
+  // to set the product up.
   modal.querySelector("#pm-setup-byok")?.addEventListener("click", () => {
     closeModal();
-    showToast("Click the Prompt Memory icon in your toolbar to add your key.", "info");
+    openSettings();
   });
   modal.querySelector("#pm-setup-signin")?.addEventListener("click", () => {
     closeModal();
-    showToast("Click the Prompt Memory icon in your toolbar to sign in.", "info");
+    openSettings();
   });
+
+  // Without this the modal is built, inserted, wired up — and never shown.
+  // .pm-modal-overlay is opacity:0/visibility:hidden until .pm-visible is
+  // added, which every other modal does and this one did not. The effect was
+  // that a new user with no account and no API key typed a prompt, pressed
+  // Enhance, and got absolutely nothing: no modal, no toast, no error. That is
+  // the first interaction every single new install has with this product.
+  overlay.classList.add("pm-visible");
 }
 
 // ══════════════════════════════════════════════════════════════
 // DIFF PREVIEW MODAL — Shows original vs enhanced
 // ══════════════════════════════════════════════════════════════
-
-function showDiffModal(result) {
-  const overlay = getOrCreateModalOverlay();
-  const modal = overlay.querySelector(".pm-modal");
-
-  const contextLine = result.context_used
-    ? `${result.context_used.selected} selected · ${result.context_used.auto_matched} auto-matched · ${result.context_used.passive_matched || 0} from history · ${result.context_used.conversation_messages} conversation msgs`
-    : "";
-
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Enhanced Prompt</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body pm-diff-body">
-      <div class="pm-diff-section" id="pm-diff-original-section">
-        <div class="pm-diff-label-row">
-          <div class="pm-diff-label">Original</div>
-          <button class="pm-diff-edit-btn" id="pm-edit-original-btn">
-            <span class="pm-edit-icon">✏️</span>
-            <span class="pm-edit-text">Edit</span>
-          </button>
-        </div>
-        <div class="pm-diff-original" id="pm-diff-original-text">${escHtml(result.original)}</div>
-      </div>
-      <div class="pm-diff-arrow" id="pm-diff-arrow">↓ enhanced in ${result.mode || currentMode} mode</div>
-      <div class="pm-diff-section" id="pm-diff-enhanced-section">
-        <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
-        <div class="pm-diff-enhanced">${escHtml(result.enhanced)}</div>
-      </div>
-      ${contextLine ? `<div class="pm-diff-meta">${escHtml(contextLine)} · ${result.latency}s</div>` : ""}
-    </div>
-    <div class="pm-modal-footer">
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Discard</button>
-      <button class="pm-btn pm-btn-secondary" id="pm-copy-enhanced">Copy</button>
-      <button class="pm-btn pm-btn-secondary" id="pm-save-enhanced">Save</button>
-      <button class="pm-btn pm-btn-primary" id="pm-use-enhanced">Use This Prompt</button>
-    </div>
-  `;
-
-  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
-  );
-
-  // Edit original prompt
-  document.getElementById("pm-edit-original-btn").addEventListener("click", () => {
-    const section = document.getElementById("pm-diff-original-section");
-    const originalTextEl = document.getElementById("pm-diff-original-text");
-    const editBtn = document.getElementById("pm-edit-original-btn");
-
-    editBtn.style.display = "none";
-    const label = section.querySelector(".pm-diff-label");
-    if (label) label.textContent = "Original (editing)";
-
-    originalTextEl.outerHTML = `
-      <textarea class="pm-diff-edit-textarea" id="pm-diff-edit-textarea">${escHtml(result.original)}</textarea>
-      <div class="pm-diff-edit-actions">
-        <button class="pm-cancel-edit-btn" id="pm-cancel-edit">Cancel</button>
-        <button class="pm-reenhance-btn" id="pm-reenhance-btn">Re-Enhance ↻</button>
-      </div>
-    `;
-
-    const textarea = document.getElementById("pm-diff-edit-textarea");
-    if (textarea) {
-      textarea.focus();
-      textarea.selectionStart = textarea.value.length;
-    }
-
-    document.getElementById("pm-cancel-edit").addEventListener("click", () => {
-      showDiffModal(result);
-    });
-
-    document.getElementById("pm-reenhance-btn").addEventListener("click", () => {
-      const editedText = document.getElementById("pm-diff-edit-textarea").value.trim();
-      handleReEnhance(editedText, result.original);
-    });
-  });
-
-  // Copy enhanced prompt
-  document.getElementById("pm-copy-enhanced").addEventListener("click", () => {
-    navigator.clipboard.writeText(result.enhanced);
-    showToast("Copied to clipboard!", "success");
-  });
-
-  // Use enhanced prompt
-  document.getElementById("pm-use-enhanced").addEventListener("click", () => {
-    applyToInput(result.enhanced);
-    closeModal();
-    showFeedbackToast(result);
-  });
-
-  // Save enhanced prompt
-  document.getElementById("pm-save-enhanced").addEventListener("click", async () => {
-    const ok = await createSavedPrompt(result.enhanced, null, []);
-    if (ok) {
-      showToast("Enhanced prompt saved!", "success");
-      await fetchSavedPrompts();
-    }
-    closeModal();
-  });
-
-  overlay.classList.add("pm-visible");
-}
 
 // Re-enhance with edited original prompt
 let reEnhanceCooldown = false;
@@ -1792,47 +1900,243 @@ function closeModal() {
 // INPUT DETECTION & PASSIVE TRACKING
 // ══════════════════════════════════════════════════════════════
 
-function getCurrentInputText() {
-  const selectors = [
-    "#prompt-textarea",
-    "[contenteditable='true']",
-    "textarea",
-  ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) {
-      return el.innerText || el.value || "";
-    }
-  }
-  return "";
+// Ordered most- to least-specific. querySelector returns the FIRST match in
+// document order, which on several of these sites is a hidden search box or an
+// off-screen editor, so visibility is checked before a candidate is accepted.
+const COMPOSER_SELECTORS = [
+  "#prompt-textarea",                          // ChatGPT
+  "div[contenteditable='true'][role='textbox']",
+  "[data-testid='chat-input'] [contenteditable='true']",
+  "form [contenteditable='true']",
+  "form textarea",
+  "[contenteditable='true']",
+  "textarea",
+];
+
+function isUsable(el) {
+  if (!el || el.offsetParent === null) return false;
+  if (el.disabled || el.readOnly) return false;
+  if (el.getAttribute?.("aria-hidden") === "true") return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 40 && r.height > 10;
 }
 
-function applyToInput(text) {
-  const selectors = [
-    "#prompt-textarea",
-    "[contenteditable='true']",
-    "textarea",
-  ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) {
-      if (el.tagName === "TEXTAREA") {
-        el.value = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        el.innerText = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-      return;
+/** The composer both reading and writing must agree on. */
+function findComposer() {
+  for (const sel of COMPOSER_SELECTORS) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (isUsable(el)) return el;
     }
   }
+  return null;
+}
+
+function composerText(el) {
+  if (!el) return "";
+  return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
+    ? el.value || ""
+    : el.innerText || "";
+}
+
+function getCurrentInputText() {
+  return composerText(findComposer());
+}
+
+const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+/**
+ * Write text into the page's composer. Returns true only if it actually stuck.
+ *
+ * The old version assigned `el.value = text` (or `el.innerText`) and returned
+ * nothing. Both halves of that were wrong:
+ *
+ *  - React tracks the last value it wrote to an input in an internal
+ *    `_valueTracker`. A direct assignment updates the DOM but leaves the
+ *    tracker unchanged, so React's synthetic `input` handler sees no change,
+ *    never updates state, and re-renders the ORIGINAL text back. Going through
+ *    the native prototype setter is what makes the tracker observe the write.
+ *  - ChatGPT and Claude use ProseMirror/Lexical, which keep their own document
+ *    model. Assigning `innerText` mutates the rendered DOM underneath the model
+ *    and is discarded on the editor's next render. `insertText` via execCommand
+ *    goes through the real beforeinput/input pipeline the editor listens on.
+ *
+ * Returning void was the more damaging half: the caller closed the modal and
+ * showed a success toast regardless, so a failed write looked identical to a
+ * successful one — and the user pressed Enter and sent their ORIGINAL prompt
+ * believing it had been replaced.
+ */
+/**
+ * Wait for a framework re-render to have had a chance to run.
+ *
+ * Two animation frames, but raced against a timer: requestAnimationFrame does
+ * not fire at all in a background tab, and this sits on the await path of
+ * "Use This Prompt". Without the race, enhancing in a tab the user has since
+ * switched away from would hang that promise forever — the modal would never
+ * close and the enhancement would be stuck behind a callback that never runs.
+ */
+function nextFrame(timeoutMs = 120) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+function selectAllIn(el) {
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
+ * Insertion strategies for rich-text composers, tried in order.
+ *
+ * Which one works depends on how the editor watches for changes, and the big
+ * two do it differently: ProseMirror (ChatGPT) reconciles from a
+ * MutationObserver, Lexical and friends act on `beforeinput`. Verified in
+ * Chrome: document.execCommand("insertText") fires `input` but does NOT fire
+ * `beforeinput`, so an editor that only listens to the latter never learns
+ * about the text and reverts it on the next render.
+ */
+const INSERT_STRATEGIES = [
+  function viaBeforeInput(el, text) {
+    // Dispatched explicitly because execCommand does not raise it. If the
+    // editor handles and cancels it, it has done the insertion itself and
+    // execCommand must not run as well or the text lands twice.
+    const notCancelled = el.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true, cancelable: true,
+      inputType: "insertReplacementText", data: text,
+    }));
+    if (notCancelled) document.execCommand("insertText", false, text);
+  },
+
+  function viaPaste(el, text) {
+    // Every serious editor implements paste, which makes this the best
+    // fallback when the editor ignored the events above.
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(new ClipboardEvent("paste", {
+      clipboardData: dt, bubbles: true, cancelable: true,
+    }));
+  },
+
+  function viaTextContent(el, text) {
+    // Plain contenteditable with no framework behind it.
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", {
+      bubbles: true, inputType: "insertText", data: text,
+    }));
+  },
+];
+
+function composerMatches(el, text) {
+  const after = norm(composerText(el));
+  const want = norm(text);
+  return after === want || (want.length > 40 && after.includes(want.slice(0, 40)));
+}
+
+/**
+ * Write text into the page's composer. Resolves true only if it actually stuck.
+ *
+ * The old version assigned `el.value = text` (or `el.innerText`) and returned
+ * nothing. Both halves of that were wrong:
+ *
+ *  - React tracks the last value it wrote to an input in an internal
+ *    `_valueTracker`. A direct assignment updates the DOM but leaves the
+ *    tracker unchanged, so React's synthetic `input` handler sees no change,
+ *    never updates state, and re-renders the ORIGINAL text back. Going through
+ *    the native prototype setter is what makes the tracker observe the write.
+ *  - ChatGPT and Claude use ProseMirror/Lexical, which keep their own document
+ *    model. Assigning `innerText` mutates the rendered DOM underneath the model
+ *    and is discarded on the editor's next render.
+ *
+ * Returning void was the more damaging half: the caller closed the modal and
+ * showed a success toast regardless, so a failed write looked identical to a
+ * successful one — and the user pressed Enter and sent their ORIGINAL prompt
+ * believing it had been replaced.
+ *
+ * Verification waits a frame before reading back. Checking synchronously
+ * reports success for a write the editor is about to revert, which reproduces
+ * the original bug with extra steps.
+ */
+async function applyToInput(text) {
+  const el = findComposer();
+  if (!el) return false;
+
+  try {
+    if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+      const proto = el.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      el.focus();
+      if (setter) setter.call(el, text);
+      else el.value = text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await nextFrame();
+      return norm(el.value) === norm(text);
+    }
+
+    for (const strategy of INSERT_STRATEGIES) {
+      el.focus();
+      selectAllIn(el);
+      try {
+        strategy(el, text);
+      } catch {
+        continue;         // strategy unavailable in this browser; try the next
+      }
+      await nextFrame();
+      if (composerMatches(el, text)) return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn("Prompt Memory: could not write to the composer", err);
+    return false;
+  }
+}
+
+/**
+ * Apply, and when the page refuses the write, put the text somewhere the user
+ * can still get at it rather than losing the enhancement silently.
+ */
+async function applyOrFallback(text, successMessage = "Prompt applied to input!") {
+  if (await applyToInput(text)) {
+    showToast(successMessage, "success");
+    return true;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("Couldn't update the chat box — copied to your clipboard instead.", "error");
+  } catch {
+    showToast("Couldn't update the chat box. Copy the text from the panel.", "error");
+  }
+  return false;
+}
+
+/**
+ * x.com matches only /i/grok, but a content script keeps running after a
+ * client-side navigation away from it. Without this check the tracker stayed
+ * live while the user moved on to DMs, the tweet composer and search — none of
+ * which the extension has any business recording.
+ */
+function onTrackableSurface() {
+  if (window.location.hostname !== "x.com") return true;
+  return window.location.pathname.startsWith("/i/grok");
 }
 
 function setupPassiveTracking() {
   let lastText = "";
 
   document.addEventListener("input", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     const el = e.target;
     if (
       el.matches("#prompt-textarea, [contenteditable='true'], textarea") &&
@@ -1843,7 +2147,7 @@ function setupPassiveTracking() {
   }, true);
 
   document.addEventListener("keydown", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     if (e.key === "Enter" && !e.shiftKey && lastText.trim().length > 5) {
       trackPrompt(lastText);
       lastText = "";
@@ -1851,7 +2155,7 @@ function setupPassiveTracking() {
   }, true);
 
   document.addEventListener("click", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     const btn = e.target.closest("button");
     if (
       btn &&

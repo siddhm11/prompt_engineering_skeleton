@@ -52,5 +52,11 @@ requests>=2.31.0
 # File Upload (voice-to-prompt)
 python-multipart
 
-# Rate Limiting
-slowapi>=0.1.9
+# Rate limiting is implemented in backend/core/ratelimit.py, not slowapi.
+#
+# slowapi resolves the caller by looking for an endpoint parameter named
+# `request`, and that name is already the Pydantic body model on /enhance and
+# /enhance/stream, so its decorator cannot find the HTTP request. It also keys
+# on IP by default, and every request to the Space arrives from one proxy
+# address — an IP-keyed limiter would throttle the whole user base as a single
+# client. The replacement is ~60 lines and keys on the authenticated user.

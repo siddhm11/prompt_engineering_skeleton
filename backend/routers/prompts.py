@@ -2,12 +2,15 @@
 import io
 import time
 import json
+from datetime import datetime
 from bson import ObjectId
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from ..models.schemas import TrackRequest, EnhanceRequest, FeedbackRequest
 from ..core.config import settings
 from ..core.security import verify_jwt
+from ..core.ratelimit import enhance_limit, voice_limit
+from ..core import usage
 from ..core.database import MongoDB, in_memory_users, in_memory_saved_prompts
 from ..services.memory_service import MemoryService
 from ..services.llm_service import get_groq_client, mark_groq_rate_limited
@@ -45,35 +48,74 @@ def effective_tier(user_id: str, request) -> str:
     return get_user_tier(user_id)
 
 
-def check_daily_limit(user_id: str, tier: str) -> tuple:
-    """Returns (allowed: bool, count: int, limit: int)."""
+def count_today(user_id: str) -> tuple:
+    """
+    Today's billable enhancements for a user. Returns (count, degraded).
+
+    `degraded` means the datastore could not be read and the number is coming
+    from the in-process tally alone, which a restart would have emptied — so
+    callers must not treat it as authoritative.
+
+    Both this and the in-process tally count the same shape: an "active" log
+    that produced an enhancement. If one definition changes the other has to
+    change with it, or the ration drifts.
+    """
     from datetime import datetime
-    limit = settings.TIER_LIMITS.get(tier, settings.SHARED_KEY_DAILY_LIMIT)
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    count = 0
+    shadow = usage.get(user_id)
 
     if MongoDB.prompts_col is not None:
         try:
-            count = MongoDB.prompts_col.count_documents({
+            stored = MongoDB.prompts_col.count_documents({
                 "user_id": user_id,
                 "source": "active",
                 "enhanced": {"$ne": None},
                 "timestamp": {"$gte": today_start},
             })
-        except Exception:
-            pass
-    else:
-        from ..core.database import in_memory_prompt_logs
-        count = sum(
-            1 for log in in_memory_prompt_logs
-            if log.get("user_id") == user_id
-            and log.get("source") == "active"
-            and log.get("enhanced")
-            and isinstance(log.get("timestamp"), datetime)
-            and log["timestamp"] >= today_start
-        )
+            # Highest wins: the store is authoritative across restarts, the
+            # tally is authoritative for writes the store rejected.
+            return max(stored, shadow), False
+        except Exception as e:
+            print(f"⚠️ Usage read failed, falling back to in-process tally: {e}")
+            return shadow, True
 
-    return (count < limit, count, limit)
+    from ..core.database import in_memory_prompt_logs
+    stored = sum(
+        1 for log in in_memory_prompt_logs
+        if log.get("user_id") == user_id
+        and log.get("source") == "active"
+        and log.get("enhanced")
+        and isinstance(log.get("timestamp"), datetime)
+        and log["timestamp"] >= today_start
+    )
+    return max(stored, shadow), False
+
+
+def check_daily_limit(user_id: str, tier: str) -> tuple:
+    """
+    Returns (allowed: bool, count: int, limit: int, degraded: bool).
+
+    This used to initialise count to 0 and swallow every read exception, so any
+    Mongo hiccup silently granted an unlimited allowance to everybody. The
+    shared Groq key is roughly 100 enhancements/day across the entire user
+    base, so that turned one database blip into a drained org quota within
+    minutes — which every user then saw as `quota_exhausted`.
+
+    Failing closed is not the answer either: it converts a transient blip into
+    a total outage. Instead the in-process tally carries the ration when the
+    store is unreachable, and a degraded read additionally clamps shared-key
+    tiers to a small emergency allowance, because a process that restarted
+    mid-outage starts its tally at zero and cannot prove otherwise.
+    """
+    limit = settings.TIER_LIMITS.get(tier, settings.SHARED_KEY_DAILY_LIMIT)
+    count, degraded = count_today(user_id)
+
+    # BYOK users spend their own quota, so a degraded store is no reason to
+    # ration them — they were never drawing on the shared key.
+    if degraded and tier != "byok":
+        limit = min(limit, usage.DEGRADED_LIMIT)
+
+    return (count < limit, count, limit, degraded)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -329,12 +371,22 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str):
         # Separate user messages and AI responses
         user_msgs = [m for m in request.conversation_context if m.startswith("[user]")]
         ai_msgs = [m for m in request.conversation_context if not m.startswith("[user]")]
-        # Take last 3 user messages (300 chars each) + last 1 AI response (500 chars)
-        selected = []
-        for m in user_msgs[-3:]:
-            selected.append(m[:300])
-        if ai_msgs:
-            selected.append(ai_msgs[-1][:500])
+
+        if user_msgs:
+            # Last 3 user messages (300 chars each) + last 1 AI response (500).
+            selected = [m[:300] for m in user_msgs[-3:]]
+            if ai_msgs:
+                selected.append(ai_msgs[-1][:500])
+        else:
+            # No message carried a [user] tag. That used to mean every scraped
+            # message landed in ai_msgs and exactly ONE of them survived — so on
+            # any platform whose scraper could not identify roles, six messages
+            # of context silently became one. The extension now tags roles
+            # everywhere it can, but an unrecognised site or a DOM change can
+            # still produce untagged history, and degrading to a single message
+            # is worse than keeping the recent ones as flat context.
+            selected = [m[:300] for m in request.conversation_context[-4:]]
+
         conversation_ctx = "\n".join([f"- {m}" for m in selected])
 
     # ── 3. USER-SELECTED SAVED PROMPTS ──
@@ -506,24 +558,34 @@ def track_prompt(request: TrackRequest, user_id: str = Depends(verify_jwt)):
         source="passive_tracker"
     )
 
-    _, max_similarity = MemoryService.retrieve_context(request.user_id, request.prompt)
-    
-    if max_similarity > 0.95:
-        print(f"   ⏭ Skipped (similarity={max_similarity:.2f})")
-        return {"status": "skipped", "reason": "redundant"}
-
-    MemoryService.memorize_strategy(request.user_id, request.prompt, request.prompt)
-    print(f"   ✅ Memorized")
-    return {"status": "memorized"}
+    # No vector is written here, deliberately.
+    #
+    # This used to call memorize_strategy(prompt, prompt) — original and
+    # refined identical. _build_enhance_context() then retrieves passive
+    # matches and keeps only those where `original != refined`, so every point
+    # written on this path was discarded on read, 100% of the time. It filled
+    # the Qdrant free tier with data that could never be used, and it put a
+    # verbatim permanent copy of everything the user typed into the vector
+    # store for no benefit at all.
+    #
+    # Real strategies are still memorised in /enhance, where an actual
+    # refinement exists and original != refined holds.
+    print(f"   ✅ Logged")
+    return {"status": "logged"}
 
 
 @router.post("/enhance")
-def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
+def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(enhance_limit)):
     """
     The core prompt engineering endpoint — intent-aware, mode-aware.
     """
     tier = effective_tier(user_id, request)
-    allowed, used, limit = check_daily_limit(user_id, tier)
+    allowed, used, limit, degraded = check_daily_limit(user_id, tier)
+    degraded_note = (
+        " The prompt store is temporarily unreachable, so free usage is capped"
+        " lower than usual until it recovers."
+        if degraded else ""
+    )
     if not allowed:
         return JSONResponse(
             status_code=429,
@@ -532,13 +594,14 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
                 "detail": (
                     f"You've used all {limit} free enhancements for today. "
                     "Add your own free API key in the extension settings for "
-                    "1,000 per day."
+                    "1,000 per day." + degraded_note
                     if tier != "byok" else
                     f"Daily limit of {limit} reached."
                 ),
                 "used": used,
                 "limit": limit,
                 "tier": tier,
+                "degraded": degraded,
                 "byok_available": tier != "byok",
             },
         )
@@ -621,6 +684,10 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
         "model": result["model"],
         "provider": result["provider"],
         "byok": result["byok"],
+        # The client overwrites the user's composer with this text, so it has
+        # to know when the model ran out of tokens mid-sentence rather than
+        # finishing.
+        "truncated": result.get("truncated", False),
         "usage_today": {"used": used + 1, "limit": limit, "tier": tier},
         "context_used": {
             "selected": len(ctx["selected_context_parts"]),
@@ -644,12 +711,12 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
 
 
 @router.post("/enhance/stream")
-def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(verify_jwt)):
+def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(enhance_limit)):
     """
     Streaming enhancement — returns tokens as Server-Sent Events for real-time UI.
     """
     tier = effective_tier(user_id, request)
-    allowed, used, limit = check_daily_limit(user_id, tier)
+    allowed, used, limit, degraded = check_daily_limit(user_id, tier)
 
     print(f"\n⚡ /enhance/stream — user={user_id[:8]}... mode={request.mode} tier={tier} ({used}/{limit})")
     print(f"   Prompt: \"{request.prompt[:80]}...\"")
@@ -663,7 +730,8 @@ def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(verify
                     "Add your own free API key in the extension settings for 1,000 per day."
                     if tier != "byok" else f"Daily limit of {limit} reached."
                 ),
-                "used": used, "limit": limit, "byok_available": tier != "byok",
+                "used": used, "limit": limit, "degraded": degraded,
+                "byok_available": tier != "byok",
             }
             yield f"data: {json.dumps(payload)}\n\n"
             yield f"data: {json.dumps({'done': True, 'failed': True})}\n\n"
@@ -756,7 +824,9 @@ def enhance_feedback(request: FeedbackRequest, user_id: str = Depends(verify_jwt
         "rating": request.rating,
         "original": request.original,
         "enhanced": request.enhanced,
-        "timestamp": time.time(),
+        # datetime, not time.time(): a TTL index only expires BSON dates, so a
+        # float timestamp meant this collection would never be pruned.
+        "timestamp": datetime.now(),
     }
     
     if MongoDB.db is not None:
@@ -778,40 +848,29 @@ def enhance_history(user_id: str = Depends(verify_jwt)):
 
 
 @router.get("/enhance/usage")
-def enhance_usage(user_id: str = Depends(verify_jwt)):
-    """Returns today's enhancement count for the user."""
-    from datetime import datetime, timedelta
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    count = 0
+def enhance_usage(byok: bool = False, user_id: str = Depends(verify_jwt)):
+    """
+    Returns today's enhancement count for the user.
 
-    if MongoDB.prompts_col is not None:
-        try:
-            count = MongoDB.prompts_col.count_documents({
-                "user_id": user_id,
-                "source": "active",
-                "enhanced": {"$ne": None},
-                "timestamp": {"$gte": today_start},
-            })
-        except Exception as e:
-            print(f"⚠️ Usage count error: {e}")
-    else:
-        from ..core.database import in_memory_prompt_logs
-        count = sum(
-            1 for log in in_memory_prompt_logs
-            if log.get("user_id") == user_id
-            and log.get("source") == "active"
-            and log.get("enhanced")
-            and isinstance(log.get("timestamp"), datetime)
-            and log["timestamp"] >= today_start
-        )
+    Takes `byok` because /enhance rations against effective_tier() — which
+    promotes a user supplying their own key to the byok tier — while this
+    endpoint used get_user_tier() and reported the free-tier limit. A BYOK user
+    saw "12/15" in the usage bar while the server was actually allowing them
+    1,000. The extension knows whether it holds a key; it passes that here.
 
-    tier = get_user_tier(user_id)
-    limit = settings.TIER_LIMITS.get(tier, 20)
-    return {"count": count, "limit": limit, "tier": tier}
+    The count itself now comes from count_today(), the same function /enhance
+    rations on, so the number in the UI and the number enforced cannot drift.
+    """
+    count, degraded = count_today(user_id)
+    tier = "byok" if byok else get_user_tier(user_id)
+    limit = settings.TIER_LIMITS.get(tier, settings.SHARED_KEY_DAILY_LIMIT)
+    if degraded and tier != "byok":
+        limit = min(limit, usage.DEGRADED_LIMIT)
+    return {"count": count, "limit": limit, "tier": tier, "degraded": degraded}
 
 
 @router.post("/voice-enhance")
-async def voice_enhance(
+def voice_enhance(
     audio: UploadFile = File(...),
     mode: str = Form("deep"),
     platform: str = Form("unknown"),
@@ -820,7 +879,7 @@ async def voice_enhance(
     byok_provider: str = Form(""),
     byok_key: str = Form(""),
     byok_model: str = Form(""),
-    user_id: str = Depends(verify_jwt),
+    user_id: str = Depends(voice_limit),
 ):
     """
     Voice-to-Prompt pipeline:
@@ -833,7 +892,13 @@ async def voice_enhance(
     start_time = time.time()
 
     # ── 1. READ AUDIO ──
-    audio_bytes = await audio.read()
+    # Declared `async def` while calling a blocking Whisper upload and then the
+    # fully-synchronous enhance_prompt() inline, which pinned the single event
+    # loop for the length of both — every other request on the Space, including
+    # health checks, queued behind one voice transcription. Declared `def`, so
+    # FastAPI runs it in the threadpool where blocking work belongs; the file
+    # is read off the underlying handle since there is no await here now.
+    audio_bytes = audio.file.read()
     if len(audio_bytes) < 100:
         return {"error": "Audio too short. Please speak for at least a second."}
 

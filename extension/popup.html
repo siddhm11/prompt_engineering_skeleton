@@ -473,7 +473,53 @@
             height: 1px;
             background: rgba(255, 255, 255, 0.06);
         }
-    </style>
+    
+        /* Opened as an options page or via the onboarding tab, this is a full
+           browser tab, not a 340px toolbar strip. Widen and centre it there —
+           the popup itself is unaffected. */
+        body.pm-standalone {
+            width: auto;
+            max-width: 560px;
+            margin: 0 auto;
+            overflow: auto;
+            min-height: 100vh;
+        }
+
+        /* ── Backend switcher ── */
+        .backend-box {
+            margin: 14px 20px 18px;
+            padding: 12px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .backend-head {
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+            color: #8a8a99; font-weight: 600; margin-bottom: 8px;
+        }
+        .backend-pill {
+            font-size: 10px; padding: 2px 8px; border-radius: 100px;
+            background: rgba(120, 200, 150, .14); color: #7fd0a0; text-transform: none;
+            letter-spacing: 0;
+        }
+        .backend-pill.local { background: rgba(230, 180, 90, .16); color: #e6b45a; }
+        .backend-row { display: flex; gap: 6px; }
+        .backend-row button {
+            flex: 1; padding: 7px 6px; border-radius: 7px; cursor: pointer;
+            font-size: 11.5px; font-family: inherit;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.04); color: #c9c9d4;
+        }
+        .backend-row button.active { background: #4f7cff; border-color: #4f7cff; color: #fff; }
+        .backend-url {
+            width: 100%; margin-top: 8px; padding: 7px 9px; font-size: 11px;
+            border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(0, 0, 0, 0.25); color: #c9c9d4;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .backend-note { font-size: 10.5px; color: #6f6f7d; margin-top: 7px; line-height: 1.45; }
+</style>
 </head>
 
 <body>
@@ -529,6 +575,23 @@
     <div class="section-divider">OPTIONAL</div>
 
     <!-- ═══ LOGIN ═══ -->
+    <!-- Which backend this extension talks to. Previously the only way to
+         point at a local server was to hand-edit DEFAULT_API_URL in three
+         separate files and reload the extension. -->
+    <div class="backend-box">
+        <div class="backend-head">
+            <span>Backend</span>
+            <span class="backend-pill" id="backend-pill">Production</span>
+        </div>
+        <div class="backend-row">
+            <button id="backend-prod" class="active">Production</button>
+            <button id="backend-local">Local</button>
+        </div>
+        <input class="backend-url" id="backend-url" spellcheck="false"
+               placeholder="https://siddhm11-prompt-engine.hf.space">
+        <div class="backend-note" id="backend-note">Signed-in features use this server.</div>
+    </div>
+
     <div id="login-section">
         <div class="login-section">
             <div class="login-icon">✨</div>

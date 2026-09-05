@@ -8,7 +8,43 @@ from .core.config import settings
 from .core.database import MongoDB
 from .routers import auth, users, prompts, saved_prompts, feedback
 
-app = FastAPI(title="Context-Aware Prompt Engine")
+app = FastAPI(
+    title="Context-Aware Prompt Engine",
+    # /docs and /openapi.json enumerated all 17 routes to anonymous callers on a
+    # publicly reachable Space. Opt back in with ENABLE_DOCS=1.
+    docs_url="/docs" if (settings.ENABLE_DOCS or not settings.is_production) else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if (settings.ENABLE_DOCS or not settings.is_production) else None,
+)
+
+
+# ── BODY SIZE LIMIT ──
+# Runs before routing, so an oversized body is refused without being parsed and
+# without waiting for the auth dependency to reject it.
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    path = request.url.path
+    cap = (settings.MAX_AUDIO_BYTES
+           if path.startswith(settings.LARGE_BODY_ROUTES)
+           else settings.MAX_REQUEST_BYTES)
+
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > cap:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": "payload_too_large",
+                        "detail": f"Request body exceeds {cap} bytes.",
+                    },
+                )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "bad_content_length"},
+            )
+    return await call_next(request)
 
 # ── REQUEST LOGGING MIDDLEWARE ──
 # Prints every request to the terminal so you can see what's being hit
@@ -42,10 +78,44 @@ async def log_requests(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── PRIVATE NETWORK ACCESS (development only) ──
+#
+# Registered AFTER CORSMiddleware deliberately. Starlette applies middleware in
+# reverse registration order, so the last one added is the outermost; declared
+# before CORS, this never ran at all, because CORSMiddleware answers the
+# preflight itself and short-circuits everything inside it.
+# Chrome blocks requests from a public origin (chatgpt.com, claude.ai) to a
+# loopback address unless the server explicitly opts in on the preflight. That
+# is exactly the shape of "extension running on a real site, talking to a
+# backend on this laptop", so without this a local backend is unreachable from
+# the content script and the failure looks like a generic network error.
+#
+# Guarded to development: in production the backend is not on a private network
+# and advertising this would be meaningless at best.
+if not settings.is_production:
+    @app.middleware("http")
+    async def allow_private_network(request: Request, call_next):
+        if (request.method == "OPTIONS"
+                and request.headers.get("access-control-request-private-network") == "true"):
+            from fastapi.responses import Response
+            return Response(status_code=200, headers={
+                "Access-Control-Allow-Private-Network": "true",
+                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "600",
+            })
+        response = await call_next(request)
+        if request.headers.get("access-control-request-private-network") == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+
 
 # Startup Events
 @app.on_event("startup")
@@ -83,7 +153,17 @@ def shutdown_clients():
 
 @app.get("/")
 def health_check():
-    return {"status": "running", "service": "Context-Aware Prompt Engine", "version": "4.1"}
+    # `environment` is reported so production mode is verifiable from outside.
+    # Whether hardening is active was previously unobservable: the only visible
+    # symptom of it being off was CORS quietly accepting every origin, which is
+    # precisely the thing nobody thinks to check.
+    return {
+        "status": "running",
+        "service": "Context-Aware Prompt Engine",
+        "version": "4.1",
+        "environment": "production" if settings.is_production else "development",
+        "cors_origins": len(settings.cors_origins),
+    }
 
 
 @app.get("/health/llm")

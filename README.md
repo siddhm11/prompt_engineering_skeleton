@@ -26,7 +26,7 @@
 | ⚡ **Instant Shortcut** | Press `Ctrl+Shift+E` (`⌘+Shift+E` on Mac) to enhance in-place, instantly |
 | 🎯 **Mode-Aware** | Switches between Balanced, Technical, and Creative refinement styles |
 | 🌐 **Multi-Platform** | Works on **ChatGPT**, **Claude**, **Gemini**, **Perplexity**, **Grok** |
-| 🔐 **Secure Auth** | Google OAuth + email OTP login with JWT sessions |
+| 🔐 **Secure Auth** | Google OAuth with JWT sessions (7-day expiry) |
 | 👍 **Feedback Loop** | Thumbs up/down on enhancements to continuously improve quality |
 
 ---
@@ -54,7 +54,7 @@ prompt_engineering_skeleton/
 │   │   └── security.py      # JWT verification
 │   │
 │   ├── routers/
-│   │   ├── auth.py          # Google OAuth + OTP endpoints
+│   │   ├── auth.py          # Google OAuth endpoints
 │   │   ├── prompts.py       # Enhance, track & feedback endpoints
 │   │   ├── saved_prompts.py # CRUD for saved prompt library
 │   │   └── users.py         # User profile endpoints
@@ -63,7 +63,7 @@ prompt_engineering_skeleton/
 │   │   ├── providers.py     # Provider-agnostic LLM chain + failover
 │   │   ├── llm_service.py   # Whisper client + sentence-transformer embeddings
 │   │   ├── memory_service.py# Semantic retrieval, logging & memorization
-│   │   └── email_service.py # SendGrid OTP delivery
+│   │   └── email_service.py # SendGrid helper (currently unused)
 │   │
 │   └── models/
 │       └── schemas.py       # Pydantic request/response models
@@ -81,7 +81,7 @@ prompt_engineering_skeleton/
 - **Python 3.10+**
 - **Google Chrome** (or any Chromium-based browser)
 - API keys for: **Groq**, **MongoDB Atlas**, **Qdrant Cloud** (or use `:memory:`)
-- *(Optional)* SendGrid API key for email OTP, Google OAuth credentials
+- Google OAuth credentials (Client ID + Secret)
 
 ### 1 · Backend Setup
 
@@ -252,7 +252,7 @@ The API will be live at **http://localhost:8000**. Hit `/` to verify:
 | **Embeddings** | Sentence-Transformers (`paraphrase-multilingual-MiniLM-L12-v2`) |
 | **Vector DB** | Qdrant (cloud or in-memory) |
 | **Database** | MongoDB Atlas |
-| **Auth** | Google OAuth 2.0, Email OTP, JWT |
+| **Auth** | Google OAuth 2.0, JWT |
 | **Email** | SendGrid |
 
 ---
@@ -262,7 +262,7 @@ The API will be live at **http://localhost:8000**. Hit `/` to verify:
 - [x] Context-aware prompt enhancement
 - [x] Saved prompt library with semantic search
 - [x] Multi-platform support (ChatGPT, Claude, Gemini, Perplexity, Grok)
-- [x] Google OAuth + OTP authentication
+- [x] Google OAuth authentication
 - [x] Keyboard shortcut (`Ctrl+Shift+E`)
 - [x] Diff preview with accept/dismiss
 - [x] Thumbs up/down feedback loop
