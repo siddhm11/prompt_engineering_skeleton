@@ -34,13 +34,28 @@ let isRecording = false;
 let enhanceHistory = [];
 let usageData = { count: 0, limit: 30 };
 let isLoadingTab = false;
-let promptTrackingEnabled = true;  // Passive prompt tracking — user can opt out
-let contextEnabled = true;          // Conversation context reading — user can opt out
+// Passive prompt tracking: records every prompt the user submits on these
+// sites, whether or not they ever press Enhance, and keeps it server-side.
+//
+// This defaulted to ON with no disclosure anywhere in the product. Chrome Web
+// Store's Limited Use disclosure requirements have been enforceable since
+// 1 Aug 2026 and require prominent disclosure plus affirmative consent before
+// collecting this kind of data — silent opt-out collection is a rejection at
+// review, and a trust problem well before that for anyone drafting client work.
+//
+// Opt-in now. Nothing is collected until the user turns it on themselves.
+let promptTrackingEnabled = false;
+
+// Conversation context is different in kind: it is read from the page only
+// while fulfilling an enhancement the user explicitly asked for, is sent for
+// that one request, and is not retained as a profile. It stays on by default
+// and is disclosed and toggleable in the panel.
+let contextEnabled = true;
 
 // Load privacy preferences
 chrome.storage.local.get(["pm_tracking", "pm_context"], (result) => {
-  promptTrackingEnabled = result.pm_tracking !== false;  // default: true
-  contextEnabled = result.pm_context !== false;          // default: true
+  promptTrackingEnabled = result.pm_tracking === true;   // default: OFF
+  contextEnabled = result.pm_context !== false;          // default: on
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -335,24 +350,32 @@ function scrapeConversation() {
         }
       });
     } else if (hostname === "gemini.google.com") {
+      // Gemini distinguishes the two sides in the DOM, so tag them. Emitting
+      // "[message]" for both threw that information away — see below.
       document.querySelectorAll("message-content, .model-response-text, .query-text").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
-          messages.push(`[message]: ${text.substring(0, 500)}`);
+          const isUser = el.classList.contains("query-text") || el.closest(".query-text");
+          messages.push(`[${isUser ? "user" : "assistant"}]: ${text.substring(0, 500)}`);
         }
       });
     } else if (hostname === "grok.com" || hostname === "x.com") {
       document.querySelectorAll("[class*='message'], [class*='Message'], [data-testid*='message'], [class*='response'], [class*='query']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 2) {
-          messages.push(`[message]: ${text.substring(0, 500)}`);
+          const cls = `${el.className || ""} ${el.getAttribute("data-testid") || ""}`.toLowerCase();
+          const isUser = cls.includes("query") || cls.includes("user") || cls.includes("human");
+          messages.push(`[${isUser ? "user" : "assistant"}]: ${text.substring(0, 500)}`);
         }
       });
     } else {
       document.querySelectorAll("[class*='message'], [class*='Message'], [role='presentation']").forEach((el) => {
         const text = el.innerText?.trim();
         if (text && text.length > 5 && text.length < 2000) {
-          messages.push(text.substring(0, 500));
+          // Genuinely unknown role on an unrecognised site. Tag it explicitly
+          // rather than pushing bare text, so the backend can tell the
+          // difference between "not a user message" and "role unknown".
+          messages.push(`[unknown]: ${text.substring(0, 500)}`);
         }
       });
     }
@@ -509,7 +532,7 @@ function createPanel() {
   const trackToggle = document.getElementById("pm-tracking-toggle");
   const ctxToggle = document.getElementById("pm-context-toggle");
   chrome.storage.local.get(["pm_tracking", "pm_context"], (result) => {
-    trackToggle.checked = result.pm_tracking !== false;
+    trackToggle.checked = result.pm_tracking === true;   // default: OFF
     ctxToggle.checked = result.pm_context !== false;
   });
   trackToggle.addEventListener("change", () => {
@@ -699,7 +722,13 @@ function renderSkeleton(count = 3) {
 
 async function fetchUsage() {
   try {
-    const res = await authedFetch(`${API_URL}/enhance/usage`);
+    // /enhance rations on effective_tier(), which promotes a request carrying
+    // the user's own key to the byok tier. This endpoint had no way to know
+    // that and reported the free-tier limit, so a BYOK user watched a "12/15"
+    // bar fill up while the server was actually allowing them 1,000.
+    const route = await askWorker({ type: "PM_GET_ROUTE" });
+    const qs = route?.hasKey ? "?byok=true" : "";
+    const res = await authedFetch(`${API_URL}/enhance/usage${qs}`);
     if (!res) return;
     const data = await res.json();
     usageData = { count: data.count || 0, limit: data.limit || 30 };
@@ -975,8 +1004,7 @@ function renderHistoryTab(container) {
       `;
 
       card.querySelector(".pm-history-use").addEventListener("click", () => {
-        applyToInput(item.enhanced);
-        showToast("Prompt applied to input!", "success");
+        applyOrFallback(item.enhanced);
       });
 
       card.querySelector(".pm-history-copy").addEventListener("click", () => {
@@ -1133,7 +1161,27 @@ function loadRecentFeedback() {
 // ENHANCE HANDLER (streaming)
 // ══════════════════════════════════════════════════════════════
 
+/** Open the extension's own settings UI. */
+function openSettings() {
+  chrome.runtime.sendMessage({ type: "PM_OPEN_OPTIONS" }, () => {
+    if (chrome.runtime.lastError) {
+      showToast("Click the Prompt Memory icon in your toolbar to open settings.", "info");
+    }
+  });
+}
+
+// Guards against a second enhancement starting while one is in flight. Two
+// concurrent streams wrote into the same modal and the same composer, and on
+// the shared key that burned two of a user's fifteen daily enhancements for
+// one result.
+let enhanceInFlight = false;
+
 async function handleEnhance() {
+  if (enhanceInFlight) {
+    showToast("Already enhancing — hang on a moment.", "info");
+    return;
+  }
+
   const inputText = getCurrentInputText();
   if (!inputText || inputText.trim().length < 3) {
     showToast("Type a prompt in the chat input first.", "error");
@@ -1148,6 +1196,14 @@ async function handleEnhance() {
     // orphaned by an extension update or reload — the page needs refreshing,
     // which is a different problem from "you have not set anything up yet".
     showToast("Prompt Memory was updated — please reload this page.", "error");
+    return;
+  }
+  if (route.route === "expired") {
+    // Signed in at some point, token past its 7-day life, and no API key to
+    // fall back on. Previously this routed at the backend anyway and produced
+    // an unexplained failure on every attempt.
+    showToast("Your session expired — please sign in again.", "error");
+    openSettings();
     return;
   }
   if (route.route === "none") {
@@ -1165,6 +1221,7 @@ async function handleEnhance() {
     btn.textContent = "Enhancing...";
   }
 
+  enhanceInFlight = true;
   showStreamingDiffModal(inputText);
 
   try {
@@ -1177,6 +1234,7 @@ async function handleEnhance() {
     console.error("Prompt Memory: enhance failed", err);
     failStreamingModal(err?.message || "Enhancement failed. Please try again.");
   } finally {
+    enhanceInFlight = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = "Enhance Current Prompt";
@@ -1449,16 +1507,27 @@ function showSetupRequiredModal() {
   modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
     b.addEventListener("click", closeModal)
   );
-  // A content script cannot open the popup programmatically, so point the user
-  // at the toolbar icon rather than firing an action that silently does nothing.
+  // A content script still cannot open the ACTION popup — but it can ask the
+  // service worker to open the options page, which is the same UI. These two
+  // buttons used to close the modal and tell the user to go find the toolbar
+  // icon themselves, which is a dead end at the exact moment they had agreed
+  // to set the product up.
   modal.querySelector("#pm-setup-byok")?.addEventListener("click", () => {
     closeModal();
-    showToast("Click the Prompt Memory icon in your toolbar to add your key.", "info");
+    openSettings();
   });
   modal.querySelector("#pm-setup-signin")?.addEventListener("click", () => {
     closeModal();
-    showToast("Click the Prompt Memory icon in your toolbar to sign in.", "info");
+    openSettings();
   });
+
+  // Without this the modal is built, inserted, wired up — and never shown.
+  // .pm-modal-overlay is opacity:0/visibility:hidden until .pm-visible is
+  // added, which every other modal does and this one did not. The effect was
+  // that a new user with no account and no API key typed a prompt, pressed
+  // Enhance, and got absolutely nothing: no modal, no toast, no error. That is
+  // the first interaction every single new install has with this product.
+  overlay.classList.add("pm-visible");
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1549,10 +1618,23 @@ function showDiffModal(result) {
   });
 
   // Use enhanced prompt
-  document.getElementById("pm-use-enhanced").addEventListener("click", () => {
-    applyToInput(result.enhanced);
-    closeModal();
-    showFeedbackToast(result);
+  if (result.truncated) {
+    showToast(
+      "This rewrite hit the model's length limit and may be cut short — check it before sending.",
+      "error"
+    );
+  }
+
+  document.getElementById("pm-use-enhanced").addEventListener("click", async () => {
+    // Only close the modal and ask for feedback if the text actually landed.
+    // Closing regardless is what made a failed write indistinguishable from a
+    // successful one — the enhanced prompt was gone and the original was still
+    // sitting in the box, ready to be sent.
+    const applied = await applyOrFallback(result.enhanced, "Prompt applied!");
+    if (applied) {
+      closeModal();
+      showFeedbackToast(result);
+    }
   });
 
   // Save enhanced prompt
@@ -1792,47 +1874,243 @@ function closeModal() {
 // INPUT DETECTION & PASSIVE TRACKING
 // ══════════════════════════════════════════════════════════════
 
-function getCurrentInputText() {
-  const selectors = [
-    "#prompt-textarea",
-    "[contenteditable='true']",
-    "textarea",
-  ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) {
-      return el.innerText || el.value || "";
-    }
-  }
-  return "";
+// Ordered most- to least-specific. querySelector returns the FIRST match in
+// document order, which on several of these sites is a hidden search box or an
+// off-screen editor, so visibility is checked before a candidate is accepted.
+const COMPOSER_SELECTORS = [
+  "#prompt-textarea",                          // ChatGPT
+  "div[contenteditable='true'][role='textbox']",
+  "[data-testid='chat-input'] [contenteditable='true']",
+  "form [contenteditable='true']",
+  "form textarea",
+  "[contenteditable='true']",
+  "textarea",
+];
+
+function isUsable(el) {
+  if (!el || el.offsetParent === null) return false;
+  if (el.disabled || el.readOnly) return false;
+  if (el.getAttribute?.("aria-hidden") === "true") return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 40 && r.height > 10;
 }
 
-function applyToInput(text) {
-  const selectors = [
-    "#prompt-textarea",
-    "[contenteditable='true']",
-    "textarea",
-  ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) {
-      if (el.tagName === "TEXTAREA") {
-        el.value = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        el.innerText = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-      return;
+/** The composer both reading and writing must agree on. */
+function findComposer() {
+  for (const sel of COMPOSER_SELECTORS) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (isUsable(el)) return el;
     }
   }
+  return null;
+}
+
+function composerText(el) {
+  if (!el) return "";
+  return el.tagName === "TEXTAREA" || el.tagName === "INPUT"
+    ? el.value || ""
+    : el.innerText || "";
+}
+
+function getCurrentInputText() {
+  return composerText(findComposer());
+}
+
+const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+/**
+ * Write text into the page's composer. Returns true only if it actually stuck.
+ *
+ * The old version assigned `el.value = text` (or `el.innerText`) and returned
+ * nothing. Both halves of that were wrong:
+ *
+ *  - React tracks the last value it wrote to an input in an internal
+ *    `_valueTracker`. A direct assignment updates the DOM but leaves the
+ *    tracker unchanged, so React's synthetic `input` handler sees no change,
+ *    never updates state, and re-renders the ORIGINAL text back. Going through
+ *    the native prototype setter is what makes the tracker observe the write.
+ *  - ChatGPT and Claude use ProseMirror/Lexical, which keep their own document
+ *    model. Assigning `innerText` mutates the rendered DOM underneath the model
+ *    and is discarded on the editor's next render. `insertText` via execCommand
+ *    goes through the real beforeinput/input pipeline the editor listens on.
+ *
+ * Returning void was the more damaging half: the caller closed the modal and
+ * showed a success toast regardless, so a failed write looked identical to a
+ * successful one — and the user pressed Enter and sent their ORIGINAL prompt
+ * believing it had been replaced.
+ */
+/**
+ * Wait for a framework re-render to have had a chance to run.
+ *
+ * Two animation frames, but raced against a timer: requestAnimationFrame does
+ * not fire at all in a background tab, and this sits on the await path of
+ * "Use This Prompt". Without the race, enhancing in a tab the user has since
+ * switched away from would hang that promise forever — the modal would never
+ * close and the enhancement would be stuck behind a callback that never runs.
+ */
+function nextFrame(timeoutMs = 120) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+function selectAllIn(el) {
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
+ * Insertion strategies for rich-text composers, tried in order.
+ *
+ * Which one works depends on how the editor watches for changes, and the big
+ * two do it differently: ProseMirror (ChatGPT) reconciles from a
+ * MutationObserver, Lexical and friends act on `beforeinput`. Verified in
+ * Chrome: document.execCommand("insertText") fires `input` but does NOT fire
+ * `beforeinput`, so an editor that only listens to the latter never learns
+ * about the text and reverts it on the next render.
+ */
+const INSERT_STRATEGIES = [
+  function viaBeforeInput(el, text) {
+    // Dispatched explicitly because execCommand does not raise it. If the
+    // editor handles and cancels it, it has done the insertion itself and
+    // execCommand must not run as well or the text lands twice.
+    const notCancelled = el.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true, cancelable: true,
+      inputType: "insertReplacementText", data: text,
+    }));
+    if (notCancelled) document.execCommand("insertText", false, text);
+  },
+
+  function viaPaste(el, text) {
+    // Every serious editor implements paste, which makes this the best
+    // fallback when the editor ignored the events above.
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    el.dispatchEvent(new ClipboardEvent("paste", {
+      clipboardData: dt, bubbles: true, cancelable: true,
+    }));
+  },
+
+  function viaTextContent(el, text) {
+    // Plain contenteditable with no framework behind it.
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", {
+      bubbles: true, inputType: "insertText", data: text,
+    }));
+  },
+];
+
+function composerMatches(el, text) {
+  const after = norm(composerText(el));
+  const want = norm(text);
+  return after === want || (want.length > 40 && after.includes(want.slice(0, 40)));
+}
+
+/**
+ * Write text into the page's composer. Resolves true only if it actually stuck.
+ *
+ * The old version assigned `el.value = text` (or `el.innerText`) and returned
+ * nothing. Both halves of that were wrong:
+ *
+ *  - React tracks the last value it wrote to an input in an internal
+ *    `_valueTracker`. A direct assignment updates the DOM but leaves the
+ *    tracker unchanged, so React's synthetic `input` handler sees no change,
+ *    never updates state, and re-renders the ORIGINAL text back. Going through
+ *    the native prototype setter is what makes the tracker observe the write.
+ *  - ChatGPT and Claude use ProseMirror/Lexical, which keep their own document
+ *    model. Assigning `innerText` mutates the rendered DOM underneath the model
+ *    and is discarded on the editor's next render.
+ *
+ * Returning void was the more damaging half: the caller closed the modal and
+ * showed a success toast regardless, so a failed write looked identical to a
+ * successful one — and the user pressed Enter and sent their ORIGINAL prompt
+ * believing it had been replaced.
+ *
+ * Verification waits a frame before reading back. Checking synchronously
+ * reports success for a write the editor is about to revert, which reproduces
+ * the original bug with extra steps.
+ */
+async function applyToInput(text) {
+  const el = findComposer();
+  if (!el) return false;
+
+  try {
+    if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+      const proto = el.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      el.focus();
+      if (setter) setter.call(el, text);
+      else el.value = text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await nextFrame();
+      return norm(el.value) === norm(text);
+    }
+
+    for (const strategy of INSERT_STRATEGIES) {
+      el.focus();
+      selectAllIn(el);
+      try {
+        strategy(el, text);
+      } catch {
+        continue;         // strategy unavailable in this browser; try the next
+      }
+      await nextFrame();
+      if (composerMatches(el, text)) return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn("Prompt Memory: could not write to the composer", err);
+    return false;
+  }
+}
+
+/**
+ * Apply, and when the page refuses the write, put the text somewhere the user
+ * can still get at it rather than losing the enhancement silently.
+ */
+async function applyOrFallback(text, successMessage = "Prompt applied to input!") {
+  if (await applyToInput(text)) {
+    showToast(successMessage, "success");
+    return true;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("Couldn't update the chat box — copied to your clipboard instead.", "error");
+  } catch {
+    showToast("Couldn't update the chat box. Copy the text from the panel.", "error");
+  }
+  return false;
+}
+
+/**
+ * x.com matches only /i/grok, but a content script keeps running after a
+ * client-side navigation away from it. Without this check the tracker stayed
+ * live while the user moved on to DMs, the tweet composer and search — none of
+ * which the extension has any business recording.
+ */
+function onTrackableSurface() {
+  if (window.location.hostname !== "x.com") return true;
+  return window.location.pathname.startsWith("/i/grok");
 }
 
 function setupPassiveTracking() {
   let lastText = "";
 
   document.addEventListener("input", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     const el = e.target;
     if (
       el.matches("#prompt-textarea, [contenteditable='true'], textarea") &&
@@ -1843,7 +2121,7 @@ function setupPassiveTracking() {
   }, true);
 
   document.addEventListener("keydown", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     if (e.key === "Enter" && !e.shiftKey && lastText.trim().length > 5) {
       trackPrompt(lastText);
       lastText = "";
@@ -1851,7 +2129,7 @@ function setupPassiveTracking() {
   }, true);
 
   document.addEventListener("click", (e) => {
-    if (!promptTrackingEnabled) return;  // Check on every event
+    if (!promptTrackingEnabled || !onTrackableSurface()) return;
     const btn = e.target.closest("button");
     if (
       btn &&

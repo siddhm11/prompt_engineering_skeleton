@@ -338,7 +338,21 @@ _LEADING_THINK = re.compile(r"\A\s*<think>.*?</think>\s*", re.S | re.I)
 # An unterminated <think> — the model was cut off mid-reasoning.
 _ORPHAN_THINK = re.compile(r"\A\s*<think>.*\Z", re.S | re.I)
 # OpenAI harmony channel markers, if a raw completion ever leaks through.
-_HARMONY = re.compile(r"<\|(?:start|end|channel|message|return)\|>[^\n]*", re.I)
+# Harmony control tokens, plus the short channel/role word that immediately
+# follows one when the model leaks a raw header (`<|start|>assistant`).
+#
+# This was `<\|...\|>[^\n]*` — greedy to end of line. A leak that had no
+# newline before the real content therefore deleted the ENTIRE response rather
+# than the leaked tokens, and the caller saw an empty completion:
+#
+#   "<|start|>assistant<|message|>Write a function..."  ->  ""
+#
+# Bounded to the token and one known keyword so real content always survives.
+_HARMONY = re.compile(
+    r"<\|(?:start|end|channel|message|return)\|>"
+    r"(?:\s*(?:assistant|user|system|developer|final|analysis|commentary)\b)?",
+    re.I,
+)
 # Conversational preamble the OUTPUT_INSTRUCTION forbids but models still emit.
 _PREAMBLE = re.compile(
     r"\A\s*(?:here(?:'s| is)(?: the)?|sure[,!]?|certainly[,!]?|of course[,!]?)"
@@ -504,13 +518,19 @@ def chat(
 
         if res.status_code == 200:
             data = res.json()
-            message = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
             content = sanitize_output(message.get("content") or "")
             if not content:
                 # A 200 with empty content is a failure, not a success. Falling
                 # through is what turns a dead model into a silent no-op.
                 attempts.append((spec.label, "empty completion"))
                 continue
+            # max_completion_tokens is 1200 on every rung, so a long paste gets
+            # cut mid-sentence. The caller overwrites the user's chat box with
+            # whatever comes back, so shipping a truncated rewrite silently
+            # destroys the original text. Surface it instead.
+            truncated = choice.get("finish_reason") == "length"
             return {
                 "content": content,
                 "model": spec.model_id,
@@ -518,6 +538,7 @@ def chat(
                 "byok": explicit_key is not None,
                 "usage": data.get("usage", {}),
                 "attempts": attempts,
+                "truncated": truncated,
             }
 
         body = res.text[:400]

@@ -62,6 +62,20 @@ async function getSettings() {
   };
 }
 
+/** True when a JWT is absent, unparseable, or past its exp. */
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    if (!payload?.exp) return true;
+    return payload.exp * 1000 <= Date.now();
+  } catch {
+    // Unparseable is unusable — treat it as expired rather than routing a
+    // request at the backend that is guaranteed to come back 401.
+    return true;
+  }
+}
+
 /**
  * Which path an enhancement should take.
  *
@@ -69,10 +83,16 @@ async function getSettings() {
  *              rides along so their own quota is spent, not the shared one.
  *   direct   — not signed in but has a key. No signup, no server, no memory.
  *   none     — neither. The UI prompts for one or the other.
+ *
+ * The expiry check matters: this used to return "backend" for any stored
+ * token, expired or not. JWTs last 7 days, so a lapsed user who also had a
+ * perfectly good API key was routed at the backend anyway, got a 401 on every
+ * attempt, and was never offered the direct path that would have worked.
  */
 function resolveRoute(settings) {
-  if (settings.token) return "backend";
+  if (settings.token && !isTokenExpired(settings.token)) return "backend";
   if (settings.key) return "direct";
+  if (settings.token) return "expired";   // signed in once; needs to sign in again
   return "none";
 }
 
@@ -91,14 +111,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "PM_GET_ROUTE": {
           const settings = await getSettings();
           const provider = PROVIDERS[settings.provider];
+          const expired = Boolean(settings.token) && isTokenExpired(settings.token);
           sendResponse({
             route: resolveRoute(settings),
             hasKey: Boolean(settings.key),
-            signedIn: Boolean(settings.token),
+            signedIn: Boolean(settings.token) && !expired,
+            tokenExpired: expired,
             provider: settings.provider,
             providerLabel: provider?.label || settings.provider,
             model: settings.model,
           });
+          break;
+        }
+
+        // A content script has no API for opening the action popup, which is
+        // why five separate "open the settings" messages were dead ends that
+        // only told the user to go and click the toolbar icon themselves.
+        case "PM_OPEN_OPTIONS": {
+          await chrome.runtime.openOptionsPage();
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case "PM_START_GOOGLE_AUTH": {
+          sendResponse(await startGoogleAuth());
           break;
         }
 
@@ -154,6 +190,98 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   return true;   // keeps the port open for the async sendResponse above
 });
+
+// ─────────────────────────────────────────────────────────────
+// GOOGLE SIGN-IN
+// ─────────────────────────────────────────────────────────────
+//
+// This lives in the service worker, not the popup, and that placement is the
+// whole fix.
+//
+// An MV3 action popup is destroyed as soon as it loses focus. The old flow ran
+// `window.open(...)` from inside the popup and then waited for a postMessage
+// on the popup's own window — but opening that window took focus, which killed
+// the popup and its listener before Google ever redirected back. Sign-in from
+// the toolbar icon could therefore never complete, which is the only route
+// offered to a returning user. Polling from the popup would die the same way.
+//
+// The worker outlives the popup, so it opens the tab, waits for the result,
+// and writes it to storage. Whether the popup is open, closed, or reopened
+// halfway through makes no difference.
+
+const AUTH_POLL_INTERVAL_MS = 1500;
+const AUTH_POLL_TIMEOUT_MS = 4 * 60 * 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function startGoogleAuth() {
+  const { apiUrl } = await getSettings();
+
+  let url, state;
+  try {
+    const res = await fetch(`${apiUrl}/auth/google/login`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    ({ url, state } = await res.json());
+  } catch (err) {
+    return { ok: false, error: "Could not reach the sign-in server. Try again." };
+  }
+  if (!url || !state) {
+    return { ok: false, error: "Sign-in server returned an unexpected response." };
+  }
+
+  const tab = await chrome.tabs.create({ url });
+  const deadline = Date.now() + AUTH_POLL_TIMEOUT_MS;
+
+  const collect = async () => {
+    try {
+      const res = await fetch(
+        `${apiUrl}/auth/google/poll?state=${encodeURIComponent(state)}`
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.status === "ready" && data.token ? data : null;
+    } catch {
+      return null;   // transient; the caller keeps waiting
+    }
+  };
+
+  const finish = async (data) => {
+    await chrome.storage.local.set({
+      token: data.token,
+      email: data.email,
+      user_id: data.user_id,
+    });
+    if (tab.id !== undefined) {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+    return { ok: true, email: data.email };
+  };
+
+  while (Date.now() < deadline) {
+    await sleep(AUTH_POLL_INTERVAL_MS);
+
+    // Poll BEFORE judging the tab. The token is handed over exactly once, and
+    // the callback tab can legitimately be gone by the time we look — the user
+    // closes it themselves the moment they see "Signed in". Checking the tab
+    // first would report a cancellation for a sign-in that had in fact
+    // succeeded, and the token would already have been consumed.
+    const data = await collect();
+    if (data) return finish(data);
+
+    if (tab.id !== undefined) {
+      const stillOpen = await chrome.tabs.get(tab.id).catch(() => null);
+      if (!stillOpen) {
+        // One last look: the result may have landed in the moment between the
+        // poll above and the tab closing.
+        const late = await collect();
+        if (late) return finish(late);
+        return { ok: false, error: "Sign-in was cancelled." };
+      }
+    }
+  }
+
+  return { ok: false, error: "Sign-in timed out. Please try again." };
+}
 
 // ─────────────────────────────────────────────────────────────
 // STREAMING
@@ -214,8 +342,56 @@ chrome.runtime.onConnect.addListener((port) => {
 // FIRST RUN
 // ─────────────────────────────────────────────────────────────
 
+// Sites the content script is declared for. Kept in sync with the
+// content_scripts.matches block in manifest.json.
+const SUPPORTED_MATCHES = [
+  "https://chatgpt.com/*",
+  "https://gemini.google.com/*",
+  "https://claude.ai/*",
+  "https://www.perplexity.ai/*",
+  "https://grok.com/*",
+  "https://x.com/i/grok*",
+];
+
+/**
+ * Inject into tabs that were already open.
+ *
+ * Chrome only runs a declared content script on navigations that happen after
+ * the extension loads. Someone who installs this while sitting on a ChatGPT
+ * tab — the overwhelmingly likely case, since that is where they were when
+ * they went looking for it — got nothing at all, with no error, until they
+ * happened to reload. They have no way to know a reload is what is missing.
+ */
+async function activateExistingTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: SUPPORTED_MATCHES });
+  } catch {
+    return;   // host permissions declined; the declarative script still works
+  }
+  for (const tab of tabs) {
+    if (tab.id === undefined) continue;
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ["styles.css"] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    } catch {
+      // Chrome Web Store pages, pre-render tabs and discarded tabs all reject
+      // injection. Nothing to do for those.
+    }
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  if (reason === "update") {
+    // An update orphans the content script in every open tab: the old script
+    // keeps running against a worker that no longer exists.
+    await activateExistingTabs();
+    return;
+  }
   if (reason !== "install") return;
+
+  await activateExistingTabs();
+
   // Open settings on install so the first thing a new user sees is the one
   // action that makes the extension work, rather than discovering on their
   // first Ctrl+Shift+E that they need an account.

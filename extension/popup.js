@@ -27,6 +27,46 @@ chrome.storage.local.get(["user_id", "email", "token", "api_url"], async (result
     }
 });
 
+// ── Backend switcher ──────────────────────────────────────────────
+//
+// api_url has always been read from chrome.storage.local by the popup, the
+// content script and the service worker — but nothing ever wrote it, so the
+// only way to point at a local server was to hand-edit DEFAULT_API_URL in
+// three files and reload the extension. content.js already listens for changes
+// to this key, so switching here takes effect in open tabs immediately.
+
+const LOCAL_API_URL = "http://localhost:8000";
+
+const backendPill  = document.getElementById("backend-pill");
+const backendProd  = document.getElementById("backend-prod");
+const backendLocal = document.getElementById("backend-local");
+const backendUrl   = document.getElementById("backend-url");
+const backendNote  = document.getElementById("backend-note");
+
+function paintBackend(url) {
+    const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(url || "");
+    backendPill.textContent = isLocal ? "Local" : "Production";
+    backendPill.classList.toggle("local", isLocal);
+    backendProd.classList.toggle("active", !isLocal);
+    backendLocal.classList.toggle("active", isLocal);
+    backendUrl.value = url || DEFAULT_API_URL;
+    backendNote.textContent = isLocal
+        ? "Talking to a server on this machine. Sign in again after switching — tokens are signed per backend."
+        : "Signed-in features use this server.";
+}
+
+function setBackend(url) {
+    const clean = (url || "").trim().replace(/\/+$/, "") || DEFAULT_API_URL;
+    API_URL = clean;
+    chrome.storage.local.set({ api_url: clean }, () => paintBackend(clean));
+}
+
+backendProd?.addEventListener("click", () => setBackend(DEFAULT_API_URL));
+backendLocal?.addEventListener("click", () => setBackend(LOCAL_API_URL));
+backendUrl?.addEventListener("change", () => setBackend(backendUrl.value));
+
+chrome.storage.local.get("api_url", (r) => paintBackend(r.api_url || DEFAULT_API_URL));
+
 // ── Token helpers ──
 function isTokenExpiringSoon(token, days = 2) {
     try {
@@ -57,33 +97,52 @@ async function tryRefreshToken(token) {
 }
 
 // ── Google Login ──
+//
+// The flow is owned by the service worker, and it has to be.
+//
+// This used to call window.open() here and then wait for a postMessage on this
+// window. Opening that window moves focus, and Chrome destroys an action popup
+// the moment it loses focus — so this script, and the listener it had just
+// registered, were gone before Google ever redirected back. Sign-in from the
+// toolbar icon could never complete. Nothing about doing the waiting here can
+// fix that, because there is no "here" left to wait in.
+//
+// The worker survives, so it opens the tab and collects the result. This
+// button just starts it. If the popup happens to still be open when the token
+// lands, the storage listener below updates the UI; if it was closed, the user
+// simply sees themselves signed in next time they open it.
 googleBtn.addEventListener("click", () => {
-    statusText.innerText = "Opening Google...";
-    const width = 500;
-    const height = 600;
-    const left = (screen.width - width) / 2;
-    const top = (screen.height - height) / 2;
+    googleBtn.disabled = true;
+    statusText.innerText = "Opening Google sign-in...";
 
-    fetch(`${API_URL}/auth/google/login`)
-        .then(res => res.json())
-        .then(data => {
-            window.open(data.url, "GoogleLogin", `width=${width},height=${height},top=${top},left=${left}`);
-            statusText.innerText = "Complete sign-in in the popup...";
-        })
-        .catch(err => {
-            statusText.innerText = "Connection error. Try again.";
-            console.error("Google login error:", err);
-        });
+    chrome.runtime.sendMessage({ type: "PM_START_GOOGLE_AUTH" }, (res) => {
+        googleBtn.disabled = false;
+
+        if (chrome.runtime.lastError) {
+            // Expected whenever the popup was closed while signing in: the
+            // callback has nowhere to land. The worker still completes the
+            // flow and writes the token, so this is not a failure.
+            return;
+        }
+        if (res?.ok) {
+            statusText.innerText = "";
+            if (res.email) showProfile(res.email);
+        } else {
+            statusText.innerText = res?.error || "Sign-in failed. Try again.";
+        }
+    });
+
+    statusText.innerText = "Waiting for Google sign-in in the new tab...";
 });
 
-// ── Listen for Google callback message ──
-window.addEventListener("message", (event) => {
-    if (event.data.type === "GOOGLE_AUTH_SUCCESS") {
-        const { token, email, user_id } = event.data;
-        chrome.storage.local.set({ user_id, email, token }, () => {
-            statusText.innerText = "";
-            showProfile(email);
-        });
+// Reflect a sign-in that completed while this popup was closed or reopened.
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.token?.newValue && changes.email?.newValue !== undefined) {
+        statusText.innerText = "";
+        showProfile(changes.email.newValue);
+    } else if (changes.token && !changes.token.newValue) {
+        showLogin();
     }
 });
 
@@ -244,6 +303,12 @@ document.getElementById("key-clear").addEventListener("click", () => {
 // Opened from the post-install tab: focus the one field that matters.
 if (new URLSearchParams(location.search).get("onboarding")) {
     keyInput.focus();
+}
+
+// Rendered in a full browser tab (post-install page, or the options page)
+// rather than the 340px toolbar strip — let it use the width it has.
+if (location.search.includes("onboarding") || window.innerWidth > 420) {
+    document.body.classList.add("pm-standalone");
 }
 
 // ── UI Helpers ──
