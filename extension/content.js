@@ -1536,14 +1536,23 @@ function showDiffModal(result) {
 
   // Only shown when a saved prompt actually shaped the rewrite. The old footer
   // printed four zeros on every result, which teaches people to stop reading it.
+  // Degrade by what the response actually carries. The two enhance endpoints
+  // returned different shapes — only the non-streaming one included
+  // context_details — so reading details alone meant the chip never appeared
+  // on the streaming path, which is the path the extension uses.
   let chip = "";
   const matched = result.context_details?.auto_matched_prompts?.[0];
+  const autoCount = result.context_used?.auto_matched || 0;
   const selectedCount = result.context_used?.selected || 0;
-  if (!cardShowingOriginal && matched) {
-    const label = (matched.title || "saved prompt").slice(0, 48);
-    chip = `<div class="pm-card-chip" title="This rewrite drew on a saved prompt">\u21B3 ${escHtml(label)}</div>`;
-  } else if (!cardShowingOriginal && selectedCount > 0) {
-    chip = `<div class="pm-card-chip">\u21B3 ${selectedCount} selected</div>`;
+  if (!cardShowingOriginal) {
+    if (matched && (matched.title || matched.content)) {
+      const label = (matched.title || matched.content || "saved prompt").slice(0, 48);
+      chip = `<div class="pm-card-chip" title="This rewrite drew on a saved prompt">\u21B3 ${escHtml(label)}</div>`;
+    } else if (autoCount > 0) {
+      chip = `<div class="pm-card-chip">\u21B3 ${autoCount} saved prompt${autoCount > 1 ? "s" : ""} used</div>`;
+    } else if (selectedCount > 0) {
+      chip = `<div class="pm-card-chip">\u21B3 ${selectedCount} selected</div>`;
+    }
   }
 
   const truncatedNote = result.truncated

@@ -295,3 +295,36 @@ def test_retention_is_off_unless_explicitly_configured():
     destroyed months of live prompt logs on the first boot after deploy.
     """
     assert settings.PROMPT_LOG_TTL_DAYS == 0
+
+
+def test_both_enhance_endpoints_return_the_same_context_shape(client, auth, monkeypatch):
+    """
+    /enhance and /enhance/stream do the same work and must describe it the same
+    way. They drifted: only the non-streaming one returned context_details, so
+    any client feature naming a matched saved prompt had nothing to read on the
+    streaming path — which is the path the extension actually uses.
+    """
+    import json as _json
+    monkeypatch.setitem(settings.TIER_LIMITS, "free", 1000)
+    _stub_llm(monkeypatch)
+    monkeypatch.setattr(
+        prompts.providers, "chat_stream",
+        lambda **kw: iter([{"token": "rewritten"},
+                           {"meta": {"model": "m", "provider": "p", "byok": False}}]),
+    )
+
+    plain = client.post("/enhance", json={"prompt": "hello there"}, headers=auth).json()
+
+    streamed = None
+    body = client.post("/enhance/stream", json={"prompt": "hello there"}, headers=auth).text
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            payload = _json.loads(line[6:])
+            if payload.get("done"):
+                streamed = payload
+
+    assert streamed is not None, "stream never produced a done event"
+    for key in ("context_used", "context_details", "usage_today", "log_id", "latency"):
+        assert key in streamed, f"streaming response is missing {key!r}"
+    assert set(plain["context_details"]) == set(streamed["context_details"])
+    assert set(plain["context_used"]) == set(streamed["context_used"])

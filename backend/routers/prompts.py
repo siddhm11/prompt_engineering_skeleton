@@ -808,6 +808,25 @@ def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(enhanc
                 "passive_matched": len(ctx["passive_context_parts"]),
                 "conversation_messages": len(request.conversation_context or []),
             },
+            # Must mirror /enhance's shape. This block was missing here, so the
+            # two endpoints returned different payloads for the same work — and
+            # since the extension streams, any client feature that named a
+            # matched saved prompt silently had nothing to read. Counts alone
+            # cannot say WHICH prompt was used.
+            "context_details": {
+                "auto_matched_prompts": [
+                    {"title": sp.get("title", ""), "content": sp.get("content", "")[:200],
+                     "score": sp["score"]}
+                    for sp in ctx["similar_saved"]
+                ],
+                "passive_patterns": [
+                    {"original": pm["original"][:150], "refined": pm["refined"][:150],
+                     "score": pm["score"]}
+                    for pm in ctx["passive_matches"]
+                ],
+                "conversation_preview": ctx["conversation_ctx"][:300] if ctx["conversation_ctx"] else None,
+                "feedback_summary": ctx["feedback_summary"] or None,
+            },
         }) + "\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
