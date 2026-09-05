@@ -26,6 +26,16 @@ class Settings:
     # cluster was simply gone, and silently rewriting an operator's configured
     # endpoint would break any deployment reachable only on 443.
     QDRANT_URL = os.getenv("QDRANT_URL", ":memory:").strip()
+
+    # Requests to the vector store are on the critical path of every /enhance,
+    # so a hung cluster must fail fast rather than hold the request open.
+    QDRANT_TIMEOUT = float(os.getenv("QDRANT_TIMEOUT", "8"))
+
+    # How long to wait before retrying a vector store that failed to connect.
+    # Without this the choice is between retrying on every single request
+    # (hammering a struggling cluster) and never retrying at all (a transient
+    # blip disables memory features until the next deploy).
+    QDRANT_RETRY_SECONDS = float(os.getenv("QDRANT_RETRY_SECONDS", "30"))
     QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
     SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
     

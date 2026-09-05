@@ -155,7 +155,8 @@ class MemoryService:
                 limit=limit
             ).points
         except Exception as e:
-            print(f"⚠️ Passive context search failed: {e}")
+            print(f"❌ Passive context search FAILED (not empty — failed): {e}")
+            QdrantDB.reset()
             return []
 
         matched = []
@@ -331,7 +332,11 @@ class MemoryService:
                 limit=limit + (len(exclude_ids) if exclude_ids else 0),
             ).points
         except Exception as e:
-            print(f"⚠️ Saved prompts search failed: {e}")
+            # Distinguished from "no matches" on purpose. These read identically
+            # to the caller — an empty list — which is how a dead vector store
+            # stayed invisible for months while the library appeared to work.
+            print(f"❌ Saved-prompt search FAILED (not empty — failed): {e}")
+            QdrantDB.reset()
             return []
 
         exclude_set = set(exclude_ids or [])
@@ -389,7 +394,9 @@ class MemoryService:
                     )
                     print(f"💾 Saved prompt embedded (id={mongo_id})")
         except Exception as e:
-            print(f"❌ Saved prompt embedding failed: {e}")
+            print(f"❌ Saved prompt embedding FAILED (mongo_id={mongo_id}): {e}")
+            print("   This prompt is in the library but will never be retrieved.")
+            QdrantDB.reset()
 
     @staticmethod
     def delete_saved_prompt_vector(mongo_id: str, user_id: str = None):

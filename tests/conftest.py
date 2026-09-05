@@ -59,8 +59,21 @@ _stub("groq", Groq=_Any)
 
 # qdrant-client
 _stub("qdrant_client", QdrantClient=_Any)
+class _VectorParams:
+    """Carries .size, which the provisioning code reads back."""
+    def __init__(self, size=None, distance=None, **kw):
+        self.size = size
+        self.distance = distance
+
+
+class _Distance:
+    COSINE = "Cosine"
+    EUCLID = "Euclid"
+    DOT = "Dot"
+
+
 _stub(
     "qdrant_client.models",
     PointStruct=_Any, Filter=_Any, FieldCondition=_Any, MatchValue=_Any,
-    FilterSelector=_Any, VectorParams=_Any, Distance=_Any,
+    FilterSelector=_Any, VectorParams=_VectorParams, Distance=_Distance,
 )
