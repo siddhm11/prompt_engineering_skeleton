@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .core.config import settings
-from .core.database import MongoDB
+from .core.database import MongoDB, QdrantDB
 from .routers import auth, users, prompts, saved_prompts, feedback
 
 app = FastAPI(
@@ -183,6 +183,10 @@ def llm_health():
     # Saved-prompt search and passive memory both depend on this, and both fail
     # silently without it: nothing is written, nothing matches, nothing logs.
     status["embedding"] = embedding_status()
+
+    # The other half of the saved-prompt path. Both have to work, and both
+    # failed silently before they were reported here.
+    status["vector_store"] = QdrantDB.health()
     status["healthy"] = bool(status["chain"]) and any(
         p["keys_configured"] > 0 for p in status["providers"].values()
     )

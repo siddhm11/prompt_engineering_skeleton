@@ -126,6 +126,41 @@ class QdrantDB:
             except Exception:
                 pass
 
+    @classmethod
+    def health(cls) -> dict:
+        """
+        Whether the vector store is actually usable, and what is in it.
+
+        Saved-prompt search failed in production with no way to tell why from
+        outside. The embedding model turned out to be fine, which left Qdrant —
+        but "is it connected, do the collections exist, is anything in them"
+        was unanswerable without shell access to the Space. Point counts are
+        the decisive signal: an empty collection means writes never landed, a
+        populated one means the query or its filter is at fault.
+
+        Deliberately reports no URL or key.
+        """
+        out = {"connected": False, "collections": {}, "error": None}
+        try:
+            client = cls.get_client()
+            if client is None:
+                out["error"] = "client unavailable"
+                return out
+            out["connected"] = True
+            for name in (settings.COLLECTION_NAME, cls.SAVED_COLLECTION):
+                try:
+                    info = client.get_collection(name)
+                    out["collections"][name] = {
+                        "exists": True,
+                        "points": getattr(info, "points_count", None),
+                    }
+                except Exception as e:
+                    out["collections"][name] = {"exists": False, "error": str(e)[:120]}
+        except Exception as e:
+            out["error"] = str(e)[:160]
+        return out
+
+
 # In-Memory Fallbacks
 in_memory_users = {}
 in_memory_prompt_logs = []
