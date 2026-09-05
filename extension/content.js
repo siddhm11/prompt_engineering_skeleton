@@ -396,8 +396,14 @@ function createTrigger() {
   btn.id = "pm-trigger";
   btn.className = "pm-trigger";
   btn.innerHTML = "⊕";
-  btn.title = "Prompt Memory (Ctrl+Shift+E to enhance)";
-  btn.addEventListener("click", () => togglePanel());
+  btn.title = "Enhance this prompt (Ctrl+Shift+E)\nShift-click for your library";
+  // Click runs the thing people came for. This used to open the panel, which
+  // meant the primary action sat two clicks deep behind a tab bar; the library
+  // is the secondary path now, not the front door.
+  btn.addEventListener("click", (e) => {
+    if (e.shiftKey) togglePanel();
+    else handleEnhance();
+  });
   document.body.appendChild(btn);
 
   // Apply saved theme to trigger
@@ -438,6 +444,11 @@ function setupKeyboardShortcut() {
     } else if (e.code === "KeyV") {
       e.preventDefault();
       toggleVoice();
+    } else if (e.code === "KeyL") {
+      // The library, now that the trigger button runs an enhancement instead
+      // of opening the panel.
+      e.preventDefault();
+      togglePanel();
     }
   });
 }
@@ -1364,111 +1375,242 @@ function askWorker(message) {
 // STREAMING DIFF MODAL — Shows tokens arriving in real-time
 // ══════════════════════════════════════════════════════════════
 
-function showStreamingDiffModal(originalText) {
-  const overlay = getOrCreateModalOverlay();
-  const modal = overlay.querySelector(".pm-modal");
+// ══════════════════════════════════════════════════════════════
+// INLINE REWRITE CARD
+// ══════════════════════════════════════════════════════════════
+//
+// This replaces the diff modal for the whole enhance flow. The modal blacked
+// out the conversation to present a three-line rewrite, spent half its area
+// echoing back the prompt the user typed four seconds earlier, and offered
+// four buttons (Discard / Copy / Save / Use This Prompt) for what is a binary
+// decision — with "Discard" rendering clipped behind "Copy".
+//
+// The card anchors to the composer instead, so the conversation stays readable
+// while you judge a rewrite that is supposed to fit it, and the decision is two
+// keys: Tab accepts, Esc dismisses.
+//
+// The four entry points below keep the names the streaming flow already calls,
+// so runBackendEnhance/runDirectEnhance are untouched.
 
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Enhancing...</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body pm-diff-body">
-      <div class="pm-diff-section" id="pm-diff-original-section">
-        <div class="pm-diff-label-row">
-          <div class="pm-diff-label">Original</div>
-        </div>
-        <div class="pm-diff-original">${escHtml(originalText)}</div>
-      </div>
-      <div class="pm-diff-arrow">↓ enhancing in ${currentMode} mode...</div>
-      <div class="pm-diff-section">
-        <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
-        <div class="pm-diff-enhanced pm-streaming" id="pm-stream-target"><span class="pm-cursor">▊</span></div>
-      </div>
-    </div>
-    <div class="pm-modal-footer">
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Cancel</button>
-    </div>
-  `;
+let cardState = "idle";        // idle | streaming | ready | error
+let cardResult = null;
+let cardShowingOriginal = false;
+let cardOriginal = "";
+let cardReposition = null;
 
-  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
-  );
+function getOrCreateCard() {
+  let card = document.getElementById("pm-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "pm-card";
+    card.className = "pm-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Enhanced prompt");
+    document.body.appendChild(card);
 
-  overlay.classList.add("pm-visible");
+    chrome.storage.local.get("pm_theme", (r) =>
+      card.setAttribute("data-pm-theme", r.pm_theme || "dark")
+    );
+  }
+  return card;
 }
 
+/**
+ * Sit the card directly above the composer.
+ *
+ * Anchored rather than centred because the composer is where the user is
+ * already looking, and because a rewrite has to be judged against the
+ * conversation it belongs to — which a centred overlay hides.
+ */
+function positionCard() {
+  const card = document.getElementById("pm-card");
+  const composer = findComposer();
+  if (!card || !composer) return;
+
+  const box = composer.getBoundingClientRect();
+  const gap = 10;
+  const margin = 12;
+
+  const width = Math.min(Math.max(box.width, 380), 620);
+  let left = box.left + (box.width - width) / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+
+  card.style.width = width + "px";
+  card.style.left = left + "px";
+
+  // Prefer above the composer; fall back below when there is no room up top.
+  const height = card.offsetHeight || 160;
+  const above = box.top - gap - height;
+  card.style.top = (above >= margin ? above : Math.min(box.bottom + gap, window.innerHeight - height - margin)) + "px";
+}
+
+function openCard(innerHTML) {
+  const card = getOrCreateCard();
+  card.innerHTML = innerHTML;
+  positionCard();
+  requestAnimationFrame(() => card.classList.add("pm-card-visible"));
+
+  if (!cardReposition) {
+    cardReposition = () => positionCard();
+    window.addEventListener("resize", cardReposition, true);
+    window.addEventListener("scroll", cardReposition, true);
+  }
+  return card;
+}
+
+function closeCard() {
+  const card = document.getElementById("pm-card");
+  if (card) {
+    card.classList.remove("pm-card-visible");
+    card.remove();
+  }
+  if (cardReposition) {
+    window.removeEventListener("resize", cardReposition, true);
+    window.removeEventListener("scroll", cardReposition, true);
+    cardReposition = null;
+  }
+  cardState = "idle";
+  cardResult = null;
+  cardShowingOriginal = false;
+}
+
+function cardFoot(parts) {
+  return `<div class="pm-card-foot">${parts.join("")}</div>`;
+}
+
+const cardKey = (k) => `<span class="pm-card-key">${k}</span>`;
+
+// ── Entry point 1: the flow is starting ──
+function showStreamingDiffModal(originalText) {
+  cardOriginal = originalText;
+  cardState = "streaming";
+  cardShowingOriginal = false;
+  openCard(
+    `<div class="pm-card-text" id="pm-stream-target"><span class="pm-card-cursor"></span></div>` +
+    cardFoot([
+      `<button class="pm-card-act" id="pm-card-cancel">${cardKey("esc")} cancel</button>`,
+      `<span class="pm-card-spacer"></span>`,
+      `<span class="pm-card-meta">rewriting…</span>`,
+    ])
+  );
+  document.getElementById("pm-card-cancel")?.addEventListener("click", closeCard);
+}
+
+// ── Entry point 2: tokens arriving ──
 function updateStreamingText(text) {
   const target = document.getElementById("pm-stream-target");
-  if (target) {
-    target.innerHTML = escHtml(text) + '<span class="pm-cursor">▊</span>';
-  }
+  if (!target) return;
+  target.innerHTML = escHtml(text) + '<span class="pm-card-cursor"></span>';
+  positionCard();
 }
 
+// ── Entry point 3: finished ──
 function finalizeStreamingModal(result) {
-  // Re-render as the full diff modal with all buttons
   showDiffModal(result);
 }
 
-/**
- * Turn the streaming modal into a readable failure.
- *
- * Every failure path used to leave the modal showing "Enhancing..." with an
- * empty body: the SSE reader logged errors to the console and returned, and
- * onDone was never called. From the user's side an outage and a slow response
- * were indistinguishable, and neither ever resolved.
- */
+// ── Entry point 4: failed ──
 function failStreamingModal(message) {
-  const overlay = document.getElementById("pm-modal-overlay");
-  if (!overlay) {
-    showToast(message, "error");
-    return;
-  }
-  const modal = overlay.querySelector(".pm-modal");
-  if (!modal) return;
-
-  const needsKey = /key|limit|sign|quota/i.test(message || "");
-
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Couldn't enhance</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body">
-      <div class="pm-error-box">
-        <div class="pm-error-icon">⚠️</div>
-        <div class="pm-error-text">${escHtml(message || "Something went wrong.")}</div>
-      </div>
-      <div class="pm-error-hint">Your original text is untouched — nothing was replaced.</div>
-    </div>
-    <div class="pm-modal-footer">
-      ${needsKey ? `<button class="pm-btn pm-btn-secondary" id="pm-open-settings">Open settings</button>` : ""}
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Close</button>
-      <button class="pm-btn pm-btn-primary" id="pm-retry-enhance">Try again</button>
-    </div>
-  `;
-
-  modal.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
+  cardState = "error";
+  openCard(
+    `<div class="pm-card-text pm-card-error">${escHtml(message)}</div>` +
+    cardFoot([
+      `<button class="pm-card-act" id="pm-card-retry">${cardKey("\u2318\u21B5")} try again</button>`,
+      `<button class="pm-card-act" id="pm-card-dismiss">${cardKey("esc")} dismiss</button>`,
+    ])
   );
-  modal.querySelector("#pm-retry-enhance")?.addEventListener("click", () => {
-    closeModal();
-    handleEnhance();
-  });
-  modal.querySelector("#pm-open-settings")?.addEventListener("click", () => {
-    closeModal();
-    showSetupRequiredModal();
-  });
+  document.getElementById("pm-card-retry")?.addEventListener("click", () => { closeCard(); handleEnhance(); });
+  document.getElementById("pm-card-dismiss")?.addEventListener("click", closeCard);
 }
 
-/**
- * Shown when the user has neither an account nor an API key.
- *
- * Leads with the no-account option deliberately: it is the faster path to a
- * working enhancement, and the free tier a user gets on their own key
- * (1,000 requests/day on Groq) is far larger than the shared server allowance
- * we can afford to give them.
- */
+/** The finished state. Named showDiffModal because several other flows
+ *  (voice, re-enhance, feedback) already call it. */
+function showDiffModal(result) {
+  cardResult = result;
+  cardState = "ready";
+  lastEnhanceResult = result;
+
+  const body = cardShowingOriginal
+    ? `<div class="pm-card-text pm-card-original">${escHtml(result.original || cardOriginal)}</div>`
+    : `<div class="pm-card-text">${escHtml(result.enhanced)}</div>`;
+
+  // Only shown when a saved prompt actually shaped the rewrite. The old footer
+  // printed four zeros on every result, which teaches people to stop reading it.
+  let chip = "";
+  const matched = result.context_details?.auto_matched_prompts?.[0];
+  const selectedCount = result.context_used?.selected || 0;
+  if (!cardShowingOriginal && matched) {
+    const label = (matched.title || "saved prompt").slice(0, 48);
+    chip = `<div class="pm-card-chip" title="This rewrite drew on a saved prompt">\u21B3 ${escHtml(label)}</div>`;
+  } else if (!cardShowingOriginal && selectedCount > 0) {
+    chip = `<div class="pm-card-chip">\u21B3 ${selectedCount} selected</div>`;
+  }
+
+  const truncatedNote = result.truncated
+    ? `<span class="pm-card-meta" style="color:var(--pm-danger)">cut short</span>`
+    : `<span class="pm-card-meta">${result.latency ? result.latency + "s" : ""}</span>`;
+
+  openCard(
+    body + chip +
+    cardFoot([
+      `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`,
+      `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
+      `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
+      `<button class="pm-card-act" id="pm-card-save">${cardKey("\u2318S")} save</button>`,
+      `<span class="pm-card-spacer"></span>`,
+      truncatedNote,
+    ])
+  );
+
+  document.getElementById("pm-card-accept")?.addEventListener("click", acceptCard);
+  document.getElementById("pm-card-close")?.addEventListener("click", closeCard);
+  document.getElementById("pm-card-toggle")?.addEventListener("click", () => {
+    cardShowingOriginal = !cardShowingOriginal;
+    showDiffModal(cardResult);
+  });
+  document.getElementById("pm-card-save")?.addEventListener("click", saveCard);
+}
+
+/** Write the rewrite into the composer. */
+async function acceptCard() {
+  if (cardState !== "ready" || !cardResult) return;
+  const text = cardShowingOriginal ? (cardResult.original || cardOriginal) : cardResult.enhanced;
+  const result = cardResult;
+  closeCard();
+  const applied = await applyOrFallback(text, "Applied");
+  if (applied) showFeedbackToast(result);
+}
+
+async function saveCard() {
+  if (!cardResult) return;
+  const ok = await createSavedPrompt(cardResult.enhanced, null, []);
+  showToast(ok ? "Saved to your library" : "Could not save", ok ? "success" : "error");
+  if (ok) fetchSavedPrompts();
+}
+
+// ── Keymap ──
+// Only active while the card is open, so Tab keeps its normal meaning
+// everywhere else on the page.
+document.addEventListener("keydown", (e) => {
+  if (cardState === "idle") return;
+  const card = document.getElementById("pm-card");
+  if (!card) return;
+
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCard(); return; }
+  if (cardState !== "ready") return;
+
+  if (e.key === "Tab") { e.preventDefault(); e.stopPropagation(); acceptCard(); return; }
+  if (e.key === "\\") {
+    e.preventDefault(); e.stopPropagation();
+    cardShowingOriginal = !cardShowingOriginal;
+    showDiffModal(cardResult);
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+    e.preventDefault(); e.stopPropagation(); saveCard(); return;
+  }
+}, true);
+
 function showSetupRequiredModal() {
   const overlay = getOrCreateModalOverlay();
   const modal = overlay.querySelector(".pm-modal");
@@ -1533,122 +1675,6 @@ function showSetupRequiredModal() {
 // ══════════════════════════════════════════════════════════════
 // DIFF PREVIEW MODAL — Shows original vs enhanced
 // ══════════════════════════════════════════════════════════════
-
-function showDiffModal(result) {
-  const overlay = getOrCreateModalOverlay();
-  const modal = overlay.querySelector(".pm-modal");
-
-  const contextLine = result.context_used
-    ? `${result.context_used.selected} selected · ${result.context_used.auto_matched} auto-matched · ${result.context_used.passive_matched || 0} from history · ${result.context_used.conversation_messages} conversation msgs`
-    : "";
-
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Enhanced Prompt</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body pm-diff-body">
-      <div class="pm-diff-section" id="pm-diff-original-section">
-        <div class="pm-diff-label-row">
-          <div class="pm-diff-label">Original</div>
-          <button class="pm-diff-edit-btn" id="pm-edit-original-btn">
-            <span class="pm-edit-icon">✏️</span>
-            <span class="pm-edit-text">Edit</span>
-          </button>
-        </div>
-        <div class="pm-diff-original" id="pm-diff-original-text">${escHtml(result.original)}</div>
-      </div>
-      <div class="pm-diff-arrow" id="pm-diff-arrow">↓ enhanced in ${result.mode || currentMode} mode</div>
-      <div class="pm-diff-section" id="pm-diff-enhanced-section">
-        <div class="pm-diff-label pm-diff-label-new">Enhanced</div>
-        <div class="pm-diff-enhanced">${escHtml(result.enhanced)}</div>
-      </div>
-      ${contextLine ? `<div class="pm-diff-meta">${escHtml(contextLine)} · ${result.latency}s</div>` : ""}
-    </div>
-    <div class="pm-modal-footer">
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Discard</button>
-      <button class="pm-btn pm-btn-secondary" id="pm-copy-enhanced">Copy</button>
-      <button class="pm-btn pm-btn-secondary" id="pm-save-enhanced">Save</button>
-      <button class="pm-btn pm-btn-primary" id="pm-use-enhanced">Use This Prompt</button>
-    </div>
-  `;
-
-  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
-  );
-
-  // Edit original prompt
-  document.getElementById("pm-edit-original-btn").addEventListener("click", () => {
-    const section = document.getElementById("pm-diff-original-section");
-    const originalTextEl = document.getElementById("pm-diff-original-text");
-    const editBtn = document.getElementById("pm-edit-original-btn");
-
-    editBtn.style.display = "none";
-    const label = section.querySelector(".pm-diff-label");
-    if (label) label.textContent = "Original (editing)";
-
-    originalTextEl.outerHTML = `
-      <textarea class="pm-diff-edit-textarea" id="pm-diff-edit-textarea">${escHtml(result.original)}</textarea>
-      <div class="pm-diff-edit-actions">
-        <button class="pm-cancel-edit-btn" id="pm-cancel-edit">Cancel</button>
-        <button class="pm-reenhance-btn" id="pm-reenhance-btn">Re-Enhance ↻</button>
-      </div>
-    `;
-
-    const textarea = document.getElementById("pm-diff-edit-textarea");
-    if (textarea) {
-      textarea.focus();
-      textarea.selectionStart = textarea.value.length;
-    }
-
-    document.getElementById("pm-cancel-edit").addEventListener("click", () => {
-      showDiffModal(result);
-    });
-
-    document.getElementById("pm-reenhance-btn").addEventListener("click", () => {
-      const editedText = document.getElementById("pm-diff-edit-textarea").value.trim();
-      handleReEnhance(editedText, result.original);
-    });
-  });
-
-  // Copy enhanced prompt
-  document.getElementById("pm-copy-enhanced").addEventListener("click", () => {
-    navigator.clipboard.writeText(result.enhanced);
-    showToast("Copied to clipboard!", "success");
-  });
-
-  // Use enhanced prompt
-  if (result.truncated) {
-    showToast(
-      "This rewrite hit the model's length limit and may be cut short — check it before sending.",
-      "error"
-    );
-  }
-
-  document.getElementById("pm-use-enhanced").addEventListener("click", async () => {
-    // Only close the modal and ask for feedback if the text actually landed.
-    // Closing regardless is what made a failed write indistinguishable from a
-    // successful one — the enhanced prompt was gone and the original was still
-    // sitting in the box, ready to be sent.
-    const applied = await applyOrFallback(result.enhanced, "Prompt applied!");
-    if (applied) {
-      closeModal();
-      showFeedbackToast(result);
-    }
-  });
-
-  // Save enhanced prompt
-  document.getElementById("pm-save-enhanced").addEventListener("click", async () => {
-    const ok = await createSavedPrompt(result.enhanced, null, []);
-    if (ok) {
-      showToast("Enhanced prompt saved!", "success");
-      await fetchSavedPrompts();
-    }
-    closeModal();
-  });
-
-  overlay.classList.add("pm-visible");
-}
 
 // Re-enhance with edited original prompt
 let reEnhanceCooldown = false;
