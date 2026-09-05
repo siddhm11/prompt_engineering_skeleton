@@ -32,6 +32,7 @@ _oauth_state_store = {}   # state -> expiry.  CSRF protection for OAuth.
 _pending_tokens = {}
 _PENDING_TTL = 600          # seconds
 _MAX_PENDING = 500          # bound the store against a flood of dead flows
+_MAX_STATES = 2000          # same bound for states that never complete a flow
 
 
 def _sweep(store: dict):
@@ -48,10 +49,23 @@ def google_login():
         raise HTTPException(status_code=500, detail="Server missing Google Client ID")
     
     # Generate CSRF state token
-    state = secrets.token_urlsafe(32)
-    _oauth_state_store[state] = time.time() + _PENDING_TTL
     _sweep(_oauth_state_store)
     _sweep(_pending_tokens)
+
+    # This endpoint is unauthenticated by necessity — it is what you call before
+    # you have a token — and the per-user rate limiter cannot cover it for the
+    # same reason. Each call previously added an entry that lived for ten
+    # minutes with nothing bounding the total, so anyone could grow this dict
+    # for as long as they cared to. _pending_tokens has had a cap since it was
+    # written; this one was missed.
+    if len(_oauth_state_store) >= _MAX_STATES:
+        raise HTTPException(
+            status_code=503,
+            detail="Too many sign-ins in progress. Please try again in a minute.",
+        )
+
+    state = secrets.token_urlsafe(32)
+    _oauth_state_store[state] = time.time() + _PENDING_TTL
     
     redirect_uri = settings.GOOGLE_REDIRECT_URI
     scope = "openid email profile"

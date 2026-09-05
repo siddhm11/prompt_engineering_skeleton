@@ -135,3 +135,21 @@ def test_expired_pending_token_is_not_handed_over(client, fake_google, monkeypat
     auth._pending_tokens[state] = (expiry - auth._PENDING_TTL - 1, payload)
 
     assert client.get(f"/auth/google/poll?state={state}").json() == {"status": "pending"}
+
+
+def test_login_endpoint_cannot_grow_the_state_store_without_bound(client):
+    """
+    /auth/google/login is unauthenticated by necessity, so the per-user rate
+    limiter cannot protect it. Without a cap, anyone could add entries that live
+    for ten minutes each, for as long as they liked.
+    """
+    auth._oauth_state_store.clear()
+    for i in range(auth._MAX_STATES):
+        auth._oauth_state_store[f"filler-{i}"] = __import__("time").time() + auth._PENDING_TTL
+
+    res = client.get("/auth/google/login")
+    assert res.status_code == 503
+    assert len(auth._oauth_state_store) <= auth._MAX_STATES + 1
+
+    auth._oauth_state_store.clear()
+    assert client.get("/auth/google/login").status_code == 200
