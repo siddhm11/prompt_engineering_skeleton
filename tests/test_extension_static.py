@@ -372,15 +372,21 @@ def test_toasts_do_not_position_themselves():
         assert "bottom:" not in block, f"{sel} still pins itself to the viewport"
 
 
+def _z_of(selector: str) -> int:
+    """The effective level of a rule, resolved through the shared scale."""
+    decl = re.search(r"z-index:\s*([^;]+);", _css_block(selector))
+    assert decl, f"{selector} declares no z-index"
+    value = decl.group(1).strip()
+    token = re.fullmatch(r"var\((--pm-z-[a-z]+)\)", value)
+    assert token, f"{selector} hardcodes {value!r} instead of using the scale"
+    return _z_scale()[token.group(1)]
+
+
 def test_the_toast_stack_outranks_the_card():
     """
     A toast that loses the z-index race to the card is an invisible message.
     """
-    stack = _css_block("#pm-toast-stack")
-    card = _css_block(".pm-card")
-    stack_z = int(re.search(r"z-index:\s*(\d+)", stack).group(1))
-    card_z = int(re.search(r"z-index:\s*(\d+)", card).group(1))
-    assert stack_z > card_z, "toasts render behind the card"
+    assert _z_of("#pm-toast-stack") > _z_of(".pm-card"), "toasts render behind the card"
 
 
 def test_the_toast_stack_does_not_swallow_clicks():
@@ -511,3 +517,204 @@ def test_the_origin_tab_is_read_without_needing_the_tabs_permission():
         assert field not in body, f"{field} is unavailable without the tabs permission"
     assert "tabs" not in json.loads(MANIFEST)["permissions"], \
         "the sign-in fix should not have needed a broader permission"
+
+
+# ── stacking order ────────────────────────────────────────────────────────
+# Seven z-index values picked ad hoc at six different times: 99998, 99999,
+# 100001, 100002, 2147483000, 2147483100. Every layering bug found was that
+# — toasts behind the card, the card over the panel, the card punching through
+# the full-screen voice and modal backdrops. One declared scale replaces them.
+
+Z_TOKENS = ("--pm-z-panel", "--pm-z-trigger", "--pm-z-card", "--pm-z-overlay", "--pm-z-toast")
+
+
+def _z_scale() -> dict:
+    return {
+        t: int(re.search(rf"{t}:\s*(\d+);", STYLES_CSS).group(1))
+        for t in Z_TOKENS
+    }
+
+
+def test_the_z_scale_was_actually_found():
+    """Guards the extractor — a missing token would KeyError, an empty one pass."""
+    assert len(_z_scale()) == len(Z_TOKENS)
+
+
+def test_the_stacking_order_is_declared_not_inferred():
+    """The tokens must ascend in the order they are written, or the scale is
+    just seven more arbitrary numbers with nicer names."""
+    z = _z_scale()
+    order = [z[t] for t in Z_TOKENS]
+    assert order == sorted(order), f"tokens are not in ascending order: {z}"
+    assert len(set(order)) == len(order), "two surfaces share a level"
+
+
+def test_nothing_covers_the_card_that_does_not_also_take_its_keys():
+    """
+    Tab accepts what the card shows. Anything painted over it while its keymap
+    is live means accepting something you cannot see — so the panel sits below
+    the card, and the overlays that sit above it disable the keymap instead.
+    """
+    z = _z_scale()
+    assert z["--pm-z-card"] > z["--pm-z-panel"], "the panel can cover a live card"
+    assert z["--pm-z-overlay"] > z["--pm-z-card"], \
+        "the card punches through the full-screen modal and voice backdrops"
+    body = _function_bodies(CONTENT_JS, r"overlayHasInput")["overlayHasInput"]
+    assert "pm-modal-overlay.pm-visible" in body and "pm-voice-overlay.pm-visible" in body
+
+
+def test_the_card_keymap_defers_to_an_overlay():
+    assert re.search(r"if \(overlayHasInput\(\)\) return;", CONTENT_JS), \
+        "the card still answers Tab while a modal owns input"
+
+
+def test_toasts_sit_above_everything():
+    z = _z_scale()
+    assert z["--pm-z-toast"] == max(z.values()), \
+        "a status message that loses a z-index race is not a degraded message, it is none"
+
+
+def test_no_page_level_surface_hardcodes_its_own_level():
+    """
+    The two remaining literals are local: .pm-resize-handle and .pm-onboarding
+    are `position: absolute` inside the panel, so their z-index is scoped to
+    that stacking context and says nothing about page-level order.
+    """
+    literals = re.findall(r"z-index:\s*(\d+);", STYLES_CSS)
+    assert sorted(literals) == ["10", "100"], f"unscaled page-level z-index: {literals}"
+
+
+def test_the_scale_clears_host_page_overlays():
+    """ChatGPT's own overlays sat above the old 99998, so the panel could be
+    buried by the page it runs on."""
+    assert min(_z_scale().values()) > 1_000_000
+
+
+# ── the card keeps clear of the panel ─────────────────────────────────────
+
+def test_the_card_treats_an_open_panel_as_a_boundary():
+    """
+    Ordering decides who wins a collision; this is what stops there being one.
+    The card outranks the panel deliberately, so an overlap hides the panel's
+    own controls — it hid the mode toggle and the edge of the enhance button.
+    """
+    body = _function_bodies(CONTENT_JS, r"positionCard")["positionCard"]
+    assert "#pm-panel.pm-open" in body, "the card ignores the panel entirely"
+    assert "rightBound" in body
+    assert "Math.min(left, rightBound - width)" in body, \
+        "the card is not held inside the boundary it computed"
+
+
+def test_the_card_relayouts_when_the_panel_moves():
+    """Opening, closing and resizing the panel fire neither resize nor scroll,
+    which are the only events the card watches."""
+    toggle = _function_bodies(CONTENT_JS, r"togglePanel")["togglePanel"]
+    assert "positionCard()" in toggle, "opening the panel leaves the card where it was"
+    assert CONTENT_JS.count("// Dragging the panel wider walks its left edge across the card.") == 1
+
+
+# ── readability ───────────────────────────────────────────────────────────
+
+def test_the_quota_number_carries_the_state_the_bar_carries():
+    """It was --pm-text-muted at every level, so at 15/15 the count was the
+    dimmest text in the panel next to an alarm-red bar."""
+    body = _function_bodies(CONTENT_JS, r"updateUsageBar")["updateUsageBar"]
+    assert "pm-usage-label-spent" in body and "pm-usage-label-warn" in body
+    assert ".pm-usage-label.pm-usage-label-spent" in STYLES_CSS
+    assert "var(--pm-danger)" in _css_block(".pm-usage-label.pm-usage-label-spent")
+
+
+def test_a_scroller_with_more_below_says_so():
+    """Both scrollers cut their last row dead, which reads as a rendering fault
+    rather than an invitation to keep going."""
+    body = _function_bodies(CONTENT_JS, r"markScrollable")["markScrollable"]
+    assert "scrollHeight" in body and "pm-scroll-more" in body
+    assert "mask-image" in _css_block(".pm-scroll-more")
+
+
+def test_the_fade_is_removed_at_the_bottom():
+    """Dimming the final line when there is nothing beyond it is the original
+    complaint with extra steps."""
+    body = _function_bodies(CONTENT_JS, r"markScrollable")["markScrollable"]
+    assert "classList.toggle" in body, "the fade is added but never taken away"
+
+
+def test_both_clipped_scrollers_are_wired_up():
+    for fn in ("showDiffModal", "renderTabContent"):
+        body = _function_bodies(CONTENT_JS, fn)[fn]
+        assert "markScrollable" in body, f"{fn} never marks its scroller"
+
+
+# ── the library is reachable without knowing about shift ──────────────────
+
+def test_the_library_has_a_visible_way_in():
+    """
+    Shift-clicking a plus sign was the only route to the panel, and therefore to
+    the saved-prompt checkboxes that decide which context shapes a rewrite. The
+    feature read as removed.
+    """
+    assert 'lib.id = "pm-library-btn"' in CONTENT_JS
+    assert "togglePanel()" in CONTENT_JS[CONTENT_JS.index('lib.id = "pm-library-btn"'):][:600]
+
+
+def test_the_library_button_follows_the_trigger_in_the_dom():
+    """The reveal is a sibling selector, so order is load-bearing."""
+    assert CONTENT_JS.index('btn.id = "pm-trigger"') < CONTENT_JS.index('lib.id = "pm-library-btn"')
+    assert ".pm-trigger:hover ~ .pm-library-btn" in STYLES_CSS
+
+
+def test_the_primary_action_is_unchanged():
+    """Click on ⊕ stays enhance. The library used to be the front door and the
+    primary action sat two clicks behind a tab bar; this does not undo that."""
+    assert re.search(r"if \(e\.shiftKey\) togglePanel\(\);\s*\n\s*else handleEnhance\(\);", CONTENT_JS)
+
+
+def test_the_library_button_is_reachable_by_keyboard():
+    assert ".pm-library-btn:focus-visible" in STYLES_CSS
+
+
+def test_the_library_button_is_themed():
+    """Every surface that reads --pm-bg needs the attribute or it resolves :root
+    and renders dark for everyone — the bug the toasts had."""
+    assert 'lib.setAttribute("data-pm-theme"' in CONTENT_JS
+    body = _function_bodies(CONTENT_JS, r"applyTheme")["applyTheme"]
+    assert "pm-library-btn" in body
+
+
+# ── saving reports what actually happened ─────────────────────────────────
+# createSavedPrompt toasted "This prompt is already saved" from inside itself
+# and then returned true, so the caller announced its own success over the top.
+# showToast replaces the toast on screen, so the accurate message was destroyed
+# by the inaccurate one a frame later: saving the same prompt twice reported
+# "Saved to your library" for something that had not been saved.
+
+
+def test_creating_a_saved_prompt_reports_an_outcome_not_a_boolean():
+    """A boolean cannot distinguish "written" from "already there", which is
+    what let one value mean both "fine" and "nothing happened"."""
+    body = _function_bodies(CONTENT_JS, r"createSavedPrompt")["createSavedPrompt"]
+    for outcome in ('"saved"', '"duplicate"', '"failed"'):
+        assert outcome in body, f"createSavedPrompt never returns {outcome}"
+    assert "return true" not in body and "return false" not in body
+
+
+def test_the_data_call_does_not_raise_its_own_toast():
+    """Two writers to one toast is how the contradiction happened."""
+    body = _function_bodies(CONTENT_JS, r"createSavedPrompt")["createSavedPrompt"]
+    assert "showToast" not in body
+
+
+def test_a_duplicate_save_is_not_reported_as_a_save():
+    card = _function_bodies(CONTENT_JS, r"saveCard")["saveCard"]
+    assert '"duplicate"' in card, "saveCard cannot tell a duplicate from a write"
+    assert card.index('"duplicate"') < card.index("Saved to your library"), \
+        "the duplicate case falls through to the success message"
+
+
+def test_the_save_form_keeps_its_text_on_a_duplicate():
+    """Emptying the form is the gesture that means the text was written."""
+    start = CONTENT_JS.index('} else if (outcome === "duplicate") {')
+    branch = CONTENT_JS[start:CONTENT_JS.index("} else {", start)]
+    assert "already in your library" in branch, "wrong branch extracted"
+    assert '.value = ""' not in branch, "the duplicate branch clears the form"
+    assert "fetchSavedPrompts" not in branch, "it refetches as though something changed"

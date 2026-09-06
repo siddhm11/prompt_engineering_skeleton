@@ -45,6 +45,42 @@
     --pm-transition: 180ms ease;
     --pm-transition-slow: 300ms cubic-bezier(0.16, 1, 0.3, 1);
     --pm-gradient: linear-gradient(135deg, var(--pm-accent), var(--pm-accent-2));
+
+    /* ── Stacking order ──────────────────────────────────────────────────
+       One scale, written in the order these surfaces are meant to sit, so the
+       order is a thing you can read rather than a thing you infer by diffing
+       seven numbers.
+
+       It replaces 99998 / 99999 / 100001 / 100002 / 2147483000 / 2147483100,
+       chosen ad hoc at six different times. Every layering bug found so far was
+       that: toasts rendered behind the card, the card rendered over the panel,
+       and the card punched through the full-screen voice and modal backdrops.
+
+       Two rules decide the order.
+
+       Nothing may cover the card while its keyboard is live, because Tab
+       accepts what the card is showing and accepting something you cannot see
+       is how work gets destroyed. So the card sits above the panel.
+
+       The modal and voice overlays black out the whole page and take over
+       input, so they outrank the card — and the card's keys go inert while
+       they are up, which is the other half of that and lives in the keymap.
+
+       Toasts are last: a status message that loses a z-index race is not a
+       degraded message, it is no message.
+
+       The band is high because host pages are not shy either — ChatGPT's own
+       overlays sat above the old 99998, so the panel could be buried by the
+       page it runs on. Room is left above --pm-z-toast on purpose.
+
+       .pm-onboarding is deliberately absent: it is `position: absolute` inside
+       the panel, so its z-index is local to that stacking context and means
+       nothing here. */
+    --pm-z-panel: 2147482100;
+    --pm-z-trigger: 2147482200;
+    --pm-z-card: 2147482300;
+    --pm-z-overlay: 2147482400;
+    --pm-z-toast: 2147482500;
 }
 
 /* ── Light Theme Override ── */
@@ -119,7 +155,7 @@
     position: fixed;
     right: 20px;
     bottom: 24px;
-    z-index: 99999;
+    z-index: var(--pm-z-trigger);
     width: 46px;
     height: 46px;
     border-radius: 14px;
@@ -151,7 +187,7 @@
     position: fixed;
     right: 20px;
     bottom: 78px;
-    z-index: 99998;
+    z-index: var(--pm-z-panel);
     width: 400px;
     min-width: 320px;
     max-width: 600px;
@@ -639,7 +675,7 @@
 .pm-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: 100001;
+    z-index: var(--pm-z-overlay);
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(6px);
     display: flex;
@@ -914,7 +950,7 @@
     position: fixed;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 2147483100;
+    z-index: var(--pm-z-toast);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1168,7 +1204,7 @@
     width: 100%;
     height: 100%;
     background: rgba(0, 0, 0, 0.6);
-    z-index: 100002;
+    z-index: var(--pm-z-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1581,6 +1617,19 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* The number carries the same state as the bar beside it. Muted at every level
+   meant that at 15/15 — the one moment the count decides whether the next thing
+   you try works at all — it was the dimmest text in the panel, sitting next to
+   an alarm-red bar telling a different story. */
+.pm-usage-label.pm-usage-label-warn {
+    color: var(--pm-warn);
+}
+
+.pm-usage-label.pm-usage-label-spent {
+    color: var(--pm-danger);
+    font-weight: 600;
+}
+
 /* ── Feedback Tab ── */
 .pm-feedback-header {
     text-align: center;
@@ -1867,7 +1916,7 @@
 
 .pm-card {
     position: fixed;
-    z-index: 2147483000;
+    z-index: var(--pm-z-card);
     border-radius: 12px;
     border: 1px solid var(--pm-border);
     background: var(--pm-bg);
@@ -2054,4 +2103,99 @@
 .pm-card-act.pm-card-redo .pm-card-key {
     color: var(--pm-warn);
     border-color: var(--pm-warn-border);
+}
+
+/* ── Scroll affordance ───────────────────────────────────────────────────
+   Applied by markScrollable() to any scroller with content still below the
+   fold, and removed at the bottom so the final line is never dimmed once
+   there is genuinely nothing more to see.
+
+   Both scrollers used to cut their last row dead — the saved-prompt list ended
+   in an item sliced through the middle against the panel footer, the card's
+   rewrite ended mid-line. A hard edge with nothing beyond it reads as a
+   rendering fault rather than as an invitation to keep going.
+
+   A mask rather than an overlay: it is fixed to the element's box, so it stays
+   put while the content scrolls underneath it, and it needs no extra wrapper
+   around either scroller. */
+.pm-scroll-more {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+}
+
+/* ── Library affordance ──────────────────────────────────────────────────
+   The panel — and with it the whole context-selection feature, the checkboxes
+   that decide which saved prompts shape a rewrite — was reachable only by
+   shift-clicking a button that looks like a plus. The tooltip said so; nobody
+   reads tooltips, and the feature reads as missing.
+
+   Revealed on hover or keyboard focus rather than parked on screen: the ⊕ is
+   the button people already click constantly, so this is found in the course of
+   normal use without adding a second permanent object to every page.
+
+   Click on ⊕ stays enhance. That was a deliberate decision — the library used
+   to BE the front door and the primary action sat two clicks behind a tab bar —
+   and this does not relitigate it. */
+.pm-library-btn {
+    position: fixed;
+    right: 74px;
+    bottom: 30px;
+    z-index: var(--pm-z-trigger);
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid var(--pm-border);
+    background: var(--pm-bg-panel);
+    backdrop-filter: var(--pm-backdrop);
+    -webkit-backdrop-filter: var(--pm-backdrop);
+    color: var(--pm-text-secondary);
+    font-family: var(--pm-font);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    box-shadow: var(--pm-shadow-md);
+    opacity: 0;
+    transform: translateX(8px);
+    pointer-events: none;
+    transition: opacity 140ms ease, transform 140ms ease;
+    transition-delay: 120ms;
+}
+
+/* Bridges the gap to the trigger, so crossing the 8px between them does not
+   flicker the button out from under the cursor. */
+.pm-library-btn::after {
+    content: "";
+    position: absolute;
+    left: 100%;
+    top: 0;
+    width: 14px;
+    height: 100%;
+}
+
+.pm-trigger:hover ~ .pm-library-btn,
+.pm-trigger:focus-visible ~ .pm-library-btn,
+.pm-library-btn:hover,
+.pm-library-btn:focus-visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+    transition-delay: 0s;
+}
+
+.pm-library-btn:hover {
+    color: var(--pm-text);
+    border-color: var(--pm-border-accent);
+}
+
+.pm-library-btn:focus-visible {
+    outline: 2px solid var(--pm-accent);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pm-library-btn { transition: none; }
 }

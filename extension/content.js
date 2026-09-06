@@ -161,6 +161,21 @@ async function fetchSavedPrompts() {
   return savedPrompts;
 }
 
+/**
+ * Create a saved prompt. Returns "saved" | "duplicate" | "failed".
+ *
+ * An outcome, not a boolean, and no toast of its own. It used to do both:
+ * announce "This prompt is already saved" from in here and then return true, so
+ * the caller announced its own success over the top. showToast replaces the
+ * toast already on screen, so the accurate message was destroyed by the
+ * inaccurate one a frame later — saving the same prompt twice said "Saved to
+ * your library" for something that had not been saved. The Save tab said
+ * "Prompt saved successfully" for the same non-event.
+ *
+ * Reporting the outcome and letting each caller phrase it is what makes that
+ * unrepresentable: there is no longer a value that means both "fine" and
+ * "nothing happened".
+ */
 async function createSavedPrompt(content, title, tags) {
   const body = { content };
   if (title && title.trim()) body.title = title.trim();
@@ -169,14 +184,9 @@ async function createSavedPrompt(content, title, tags) {
     method: "POST",
     body: JSON.stringify(body),
   });
-  if (res && res.ok) {
-    const data = await res.json();
-    if (data.duplicate) {
-      showToast("This prompt is already saved.", "info");
-    }
-    return true;
-  }
-  return false;
+  if (!res || !res.ok) return "failed";
+  const data = await res.json();
+  return data.duplicate ? "duplicate" : "saved";
 }
 
 async function updateSavedPrompt(id, fields) {
@@ -406,9 +416,33 @@ function createTrigger() {
   });
   document.body.appendChild(btn);
 
-  // Apply saved theme to trigger
+  // A visible way into the library.
+  //
+  // Shift-click still works, and click on ⊕ is still enhance — that ordering
+  // was chosen on purpose and this does not relitigate it. But shift-click on a
+  // plus sign was the ONLY way in, which made saved-prompt context selection
+  // read as a feature that had been removed. It sits next to the trigger and
+  // appears on hover or keyboard focus, so it is found through the ordinary use
+  // of the button people already click, without parking a second permanent
+  // object on every page.
+  //
+  // Must follow the trigger in the DOM: the reveal is a sibling selector.
+  const lib = document.createElement("button");
+  lib.id = "pm-library-btn";
+  lib.className = "pm-library-btn";
+  lib.innerHTML = "\u2630 Library";
+  lib.title = "Your saved prompts and context (Shift-click \u2295)";
+  lib.addEventListener("click", (e) => {
+    e.stopPropagation();
+    togglePanel();
+  });
+  document.body.appendChild(lib);
+
+  // Apply saved theme to both docked controls
   chrome.storage.local.get("pm_theme", (result) => {
-    btn.setAttribute("data-pm-theme", result.pm_theme || "dark");
+    const theme = result.pm_theme || "dark";
+    btn.setAttribute("data-pm-theme", theme);
+    lib.setAttribute("data-pm-theme", theme);
   });
 }
 
@@ -608,6 +642,8 @@ function createPanel() {
     const diff = startX - e.clientX;
     const newWidth = Math.min(600, Math.max(320, startWidth + diff));
     panel.style.width = newWidth + "px";
+    // Dragging the panel wider walks its left edge across the card.
+    positionCard();
   });
 
   document.addEventListener("mouseup", () => {
@@ -625,6 +661,10 @@ function togglePanel(force) {
   if (!panel) return;
   panelOpen = force !== undefined ? force : !panelOpen;
   panel.classList.toggle("pm-open", panelOpen);
+  // The panel is the card's right-hand boundary, and opening or closing it
+  // fires neither resize nor scroll — the only two events the card watches.
+  positionCard();
+  positionToasts();
   if (panelOpen) {
     // If already logged in, skip onboarding and mark as onboarded
     chrome.storage.local.get(["pm_onboarded", "token"], (result) => {
@@ -759,12 +799,50 @@ function updateUsageBar() {
   bar.style.display = "flex";
   fill.style.width = pct + "%";
   fill.className = pct >= 80 ? "pm-usage-fill pm-usage-warn" : "pm-usage-fill";
-  label.textContent = `${usageData.count}/${usageData.limit} today`;
+
+  // The number tracks the bar. It was --pm-text-muted at every level — the
+  // dimmest token in the palette — so at 15/15, the one moment the count
+  // decides whether the next thing you try will work at all, it was the
+  // hardest thing in the panel to read, sitting beside an alarm-red bar.
+  label.className =
+    pct >= 100 ? "pm-usage-label pm-usage-label-spent"
+    : pct >= 80 ? "pm-usage-label pm-usage-label-warn"
+    : "pm-usage-label";
+  label.textContent =
+    pct >= 100
+      ? `${usageData.count}/${usageData.limit} today \u2014 none left`
+      : `${usageData.count}/${usageData.limit} today`;
 }
 
 // ══════════════════════════════════════════════════════════════
 // RENDER: TAB CONTENT
 // ══════════════════════════════════════════════════════════════
+
+/**
+ * Mark a scroller that has more content below it.
+ *
+ * Both scrolling surfaces cut their last row dead: the saved-prompt list ended
+ * in an item sliced through the middle against the panel footer, and the card's
+ * rewrite ended mid-line. A clean edge with nothing beyond it reads as broken
+ * rather than as "keep going" — the cut looks like a rendering fault, not an
+ * invitation.
+ *
+ * The fade is a mask on the scroller itself, which stays put while the content
+ * moves under it, and it is removed at the bottom so the last line is never
+ * dimmed once there is genuinely nothing more to see.
+ */
+function markScrollable(el) {
+  if (!el) return;
+  const more = el.scrollHeight - el.scrollTop - el.clientHeight > 2;
+  el.classList.toggle("pm-scroll-more", more);
+}
+
+/** Keep the fade honest as the user scrolls. Idempotent per element. */
+function watchScrollable(el) {
+  if (!el || el.dataset.pmScrollWatched) return;
+  el.dataset.pmScrollWatched = "1";
+  el.addEventListener("scroll", () => markScrollable(el), { passive: true });
+}
 
 function renderTabContent() {
   const body = document.getElementById("pm-tab-body");
@@ -779,6 +857,10 @@ function renderTabContent() {
   } else if (currentTab === "feedback") {
     renderFeedbackTab(body);
   }
+
+  // After the tab's own markup lands, so the measurement sees real content.
+  watchScrollable(body);
+  markScrollable(body);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -963,13 +1045,17 @@ function renderSaveTab(container) {
     btn.disabled = true;
     btn.textContent = "Saving...";
 
-    const ok = await createSavedPrompt(content, title, tags);
-    if (ok) {
+    const outcome = await createSavedPrompt(content, title, tags);
+    if (outcome === "saved") {
       setStatus("pm-save-status", "Prompt saved successfully.", "success");
       document.getElementById("pm-save-content").value = "";
       document.getElementById("pm-save-title").value = "";
       document.getElementById("pm-save-tags").value = "";
       await fetchSavedPrompts();
+    } else if (outcome === "duplicate") {
+      // The form is deliberately left filled: nothing was written, and emptying
+      // it is the gesture that means it was.
+      setStatus("pm-save-status", "That prompt is already in your library.", "info");
     } else {
       setStatus("pm-save-status", "Failed to save. Check login status.", "error");
     }
@@ -1440,9 +1526,19 @@ function positionCard() {
   const gap = 10;
   const margin = 12;
 
-  const width = Math.min(Math.max(box.width, 380), 620);
+  // The open panel is a hard right-hand boundary. The card outranks it in the
+  // stacking order — deliberately, since nothing may cover a card whose Tab key
+  // is live — which means an overlap would hide the panel's own controls. It
+  // hid the Deep/Creative toggle and the left edge of Enhance Current Prompt.
+  // Ordering decides who wins a collision; this is what stops there being one.
+  const panel = document.querySelector("#pm-panel.pm-open");
+  const rightBound = panel
+    ? Math.min(window.innerWidth - margin, panel.getBoundingClientRect().left - gap)
+    : window.innerWidth - margin;
+
+  const width = Math.min(Math.max(box.width, 380), 620, Math.max(240, rightBound - margin));
   let left = box.left + (box.width - width) / 2;
-  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  left = Math.max(margin, Math.min(left, rightBound - width));
 
   card.style.width = width + "px";
   card.style.left = left + "px";
@@ -1474,6 +1570,10 @@ function positionCard() {
 
   const height = card.offsetHeight || 160;
   card.style.top = (useAbove ? Math.max(margin, box.top - gap - height) : box.bottom + gap) + "px";
+
+  // The height budget just changed, so whether anything is still below the fold
+  // changed with it.
+  markScrollable(textEl);
 }
 
 function openCard(innerHTML) {
@@ -1658,6 +1758,8 @@ function showDiffModal(result) {
   if (textEl && prevScroll && textEl.textContent === prevContent) {
     textEl.scrollTop = prevScroll;
   }
+  watchScrollable(textEl);
+  markScrollable(textEl);
 
   document.getElementById("pm-card-accept")?.addEventListener("click", acceptCard);
   document.getElementById("pm-card-close")?.addEventListener("click", closeCard);
@@ -1726,18 +1828,39 @@ async function acceptCard() {
 
 async function saveCard() {
   if (!cardResult) return;
-  const ok = await createSavedPrompt(cardResult.enhanced, null, []);
-  showToast(ok ? "Saved to your library" : "Could not save", ok ? "success" : "error");
-  if (ok) fetchSavedPrompts();
+  const outcome = await createSavedPrompt(cardResult.enhanced, null, []);
+  if (outcome === "duplicate") {
+    showToast("Already in your library", "info");
+    return;
+  }
+  const saved = outcome === "saved";
+  showToast(saved ? "Saved to your library" : "Could not save", saved ? "success" : "error");
+  if (saved) fetchSavedPrompts();
 }
 
 // ── Keymap ──
 // Only active while the card is open, so Tab keeps its normal meaning
 // everywhere else on the page.
+/**
+ * A modal or the voice overlay is up.
+ *
+ * Both black out the page and take over input, and both now outrank the card
+ * in the stacking order — so the card is not just visually behind them, its
+ * keys have to stop answering too. Tab accepting a rewrite the user cannot see,
+ * because a full-screen backdrop is over it, is the same data loss the stale
+ * card was about.
+ */
+function overlayHasInput() {
+  return Boolean(
+    document.querySelector(".pm-modal-overlay.pm-visible, .pm-voice-overlay.pm-visible")
+  );
+}
+
 document.addEventListener("keydown", (e) => {
   if (cardState === "idle") return;
   const card = document.getElementById("pm-card");
   if (!card) return;
+  if (overlayHasInput()) return;
 
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCard(); return; }
   if (cardState !== "ready") return;
@@ -2690,6 +2813,7 @@ function applyTheme(theme) {
     // surfaces the user was actually looking at.
     document.getElementById("pm-card"),
     document.getElementById("pm-toast-stack"),
+    document.getElementById("pm-library-btn"),
   ].filter(Boolean);
   els.forEach((el) => el.setAttribute("data-pm-theme", theme));
 
