@@ -1447,10 +1447,33 @@ function positionCard() {
   card.style.width = width + "px";
   card.style.left = left + "px";
 
-  // Prefer above the composer; fall back below when there is no room up top.
+  // Everything that is not the scrolling rewrite: stale bar, chip, footer.
+  // Measured rather than assumed, because the stale bar comes and goes.
+  const textEl = card.querySelector(".pm-card-text");
+  // Not named `chrome`: this file reaches for the extension API global by that
+  // name throughout, and shadowing it inside a function is a trap for the next
+  // line added here.
+  const frame = card.offsetHeight - (textEl ? textEl.clientHeight : 0);
+
+  const roomAbove = box.top - gap - margin;
+  const roomBelow = window.innerHeight - box.bottom - gap - margin;
+
+  // Above by preference; below when the card genuinely does not fit up top and
+  // there is more room down there.
+  const useAbove = card.offsetHeight <= roomAbove || roomAbove >= roomBelow;
+  const room = useAbove ? roomAbove : roomBelow;
+
+  // Give the rewrite whatever is left over, rather than letting the card grow
+  // past the space it has. The old code clamped the card's TOP against the
+  // viewport instead, so a card too tall to fit below slid upwards over the
+  // composer — covering the very text it is a comment on, and doing it exactly
+  // when the stale bar made the card taller. MIN_TEXT stops a short window
+  // collapsing the rewrite to a sliver.
+  const MIN_TEXT = 88;
+  card.style.setProperty("--pm-card-text-max", Math.max(MIN_TEXT, room - frame) + "px");
+
   const height = card.offsetHeight || 160;
-  const above = box.top - gap - height;
-  card.style.top = (above >= margin ? above : Math.min(box.bottom + gap, window.innerHeight - height - margin)) + "px";
+  card.style.top = (useAbove ? Math.max(margin, box.top - gap - height) : box.bottom + gap) + "px";
 }
 
 function openCard(innerHTML) {
@@ -1556,8 +1579,14 @@ function showDiffModal(result) {
 
   // Named rather than merely dimmed. "Why is this greyed out" is a worse
   // question to leave a user holding than one line of explanation.
+  //
+  // The wording follows the toggle. Under \, the body IS the earlier text, so
+  // calling it "a rewrite for the earlier text" would be pointing at the wrong
+  // thing — the user would look for a staleness that is not on screen.
   const staleFlag = cardStale
-    ? `<div class="pm-card-stale-flag">\u26A0 prompt changed \u2014 this rewrite is for the earlier text</div>`
+    ? `<div class="pm-card-stale-flag">\u26A0 ${cardShowingOriginal
+        ? "prompt changed \u2014 this is the text the rewrite was built from"
+        : "prompt changed \u2014 this rewrite is for the earlier text"}</div>`
     : "";
 
   // Only shown when a saved prompt actually shaped the rewrite. The old footer
@@ -1585,28 +1614,50 @@ function showDiffModal(result) {
     ? `<span class="pm-card-meta" style="color:var(--pm-danger)">cut short</span>`
     : `<span class="pm-card-meta">${result.latency ? result.latency + "s" : ""}</span>`;
 
-  const actions = cardStale
-    ? [
-        // Accept is shown, not hidden: the key still means accept, it simply
-        // has nothing safe to accept. Hiding it would just look like the
-        // footer changed for no reason.
-        `<span class="pm-card-act pm-card-disabled" title="The prompt changed — redo first">${cardKey("Tab")} accept</span>`,
-        `<button class="pm-card-act pm-card-redo" id="pm-card-redo">${cardKey("\u2318\u21B5")} redo</button>`,
-        `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
-        `<span class="pm-card-spacer"></span>`,
-        `<span class="pm-card-meta">stale</span>`,
-      ]
-    : [
-        `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`,
-        `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
-        `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
-        `<button class="pm-card-act" id="pm-card-save">${cardKey("\u2318S")} save</button>`,
-        `<span class="pm-card-spacer"></span>`,
-        truncatedNote,
-      ];
+  // One footer, with accept swapped for its disabled twin. The stale variant
+  // used to be a separate, shorter list, which silently dropped \ original and
+  // ⌘S save while their key handlers below stayed live. A footer that stops
+  // listing keys that still work is worse than one that never listed them, and
+  // the reflow made the card visibly rebuild itself the moment you typed.
+  const accept = cardStale
+    ? `<span class="pm-card-act pm-card-disabled" title="The prompt changed — redo first">${cardKey("Tab")} accept</span>`
+    : `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`;
 
-  const card = openCard(body + staleFlag + chip + cardFoot(actions));
+  const actions = [
+    // Accept is shown, not hidden: the key still means accept, it simply has
+    // nothing safe to accept. Hiding it would just look like the footer
+    // changed for no reason.
+    accept,
+    ...(cardStale
+      ? [`<button class="pm-card-act pm-card-redo" id="pm-card-redo">${cardKey("⌘↵")} redo</button>`]
+      : []),
+    `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
+    `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
+    `<button class="pm-card-act" id="pm-card-save">${cardKey("⌘S")} save</button>`,
+    `<span class="pm-card-spacer"></span>`,
+    // No "stale" caption here. The bar at the top of the card already says it,
+    // at greater length and in the place the eye lands first.
+    truncatedNote,
+  ];
+
+  // Where the user had scrolled to in the rewrite. A staleness flip rebuilds
+  // the card, which threw the reading position away: you scroll down, edit
+  // your prompt *because* of what you just read, and the card snaps back to
+  // the top. Restored only when it is genuinely the same text — toggling to
+  // the original, or a new result, should start from the beginning.
+  const prevTextEl = document.querySelector("#pm-card .pm-card-text");
+  const prevScroll = prevTextEl ? prevTextEl.scrollTop : 0;
+  const prevContent = prevTextEl ? prevTextEl.textContent : null;
+
+  // The bar goes above the body: it qualifies the whole card, and a status
+  // printed underneath the thing it qualifies is read too late to help.
+  const card = openCard(staleFlag + body + chip + cardFoot(actions));
   card.classList.toggle("pm-card-stale", cardStale);
+
+  const textEl = card.querySelector(".pm-card-text");
+  if (textEl && prevScroll && textEl.textContent === prevContent) {
+    textEl.scrollTop = prevScroll;
+  }
 
   document.getElementById("pm-card-accept")?.addEventListener("click", acceptCard);
   document.getElementById("pm-card-close")?.addEventListener("click", closeCard);

@@ -227,3 +227,102 @@ def test_a_rewrite_in_flight_lands_stale_if_the_prompt_moved():
     """
     body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
     assert "cardStale =" in body and "getCurrentInputText()" in body
+
+
+# ── how the stale card looks ──────────────────────────────────────────────
+# The first cut of the stale state was correct and unusable. It set
+# `background` — not `background-color` — to a 5%-opaque tint, which dropped
+# --pm-bg with it and left the card see-through: the host page's own buttons
+# read straight through the rewrite, and in the light theme the keycaps went
+# white-on-white over a dark page. Correct logic behind an unreadable surface
+# is still a broken feature, so these are checks on the surface.
+
+
+def _stale_css() -> str:
+    """The `.pm-card.pm-card-stale { ... }` block."""
+    m = re.search(r"\.pm-card\.pm-card-stale\s*{([^}]*)}", STYLES_CSS)
+    assert m, "no stale card rule at all"
+    return m.group(1)
+
+
+def test_the_stale_block_was_actually_found():
+    """Guards the extractor: an empty string would pass every check below."""
+    assert "background" in _stale_css()
+
+
+def test_the_stale_card_stays_opaque():
+    """
+    The tint must LAYER over the card's background, never replace it. A
+    translucent card lets the host page through the rewrite it is showing.
+    """
+    block = _stale_css()
+    assert not re.search(r"(?<!-)\bbackground\s*:", block), \
+        "shorthand `background:` resets background-color — the card goes translucent"
+    assert "background-color: var(--pm-bg)" in block, \
+        "the stale card does not re-assert an opaque background"
+
+
+def test_the_warn_palette_is_defined_in_both_themes():
+    """
+    Every stale colour was written as var(--pm-warn, #hardcoded). None of the
+    tokens existed, so the fallback was always what rendered — one dark-tuned
+    amber in both themes, at about 2:1 on the light card.
+    """
+    for token in ("--pm-warn", "--pm-warn-soft", "--pm-warn-border", "--pm-warn-wash"):
+        assert STYLES_CSS.count(f"{token}:") >= 2, \
+            f"{token} is not defined in both the dark and light blocks"
+    assert not re.search(r"var\(--pm-warn[\w-]*,", STYLES_CSS), \
+        "a --pm-warn token still carries a hardcoded fallback, which hides a missing token"
+
+
+def test_the_stale_notice_sits_above_the_rewrite():
+    """
+    It qualifies the whole card. Printed under the body it read as a second
+    content chip, indented beneath the very text it was invalidating.
+    """
+    body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
+    render = body[body.index("openCard("):]
+    assert re.search(r"openCard\(\s*staleFlag \+ body", render), \
+        "the stale notice is rendered after the body it qualifies"
+
+
+def test_the_stale_footer_still_lists_the_keys_that_still_work():
+    """
+    The stale footer was a separate, shorter list that dropped \\ original and
+    ⌘S save — while both key handlers stayed live. A footer that stops listing
+    working keys teaches you to stop reading it.
+    """
+    body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
+    actions = body[body.index("const actions ="):body.index("openCard(")]
+    for el in ("pm-card-toggle", "pm-card-save", "pm-card-close"):
+        assert el in actions, f"{el} is missing from the one shared footer"
+    # Accept is the only thing that differs between the two states.
+    assert "pm-card-disabled" in body and "pm-card-redo" in body
+
+
+def test_the_reading_position_survives_going_stale():
+    """
+    Going stale re-renders the card. Without this the rewrite scrolled back to
+    the top exactly when the user edited in reaction to something they had
+    scrolled down to read.
+    """
+    body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
+    assert "scrollTop" in body, "the rewrite's scroll position is discarded on re-render"
+    assert "textContent === prevContent" in body, \
+        "scroll is restored without checking the text is the same text"
+
+
+def test_the_card_is_never_positioned_over_the_composer():
+    """
+    positionCard clamped the card's TOP against the viewport bottom, so a card
+    too tall to fit below slid upward over the composer — covering the text it
+    is a comment on, and doing it precisely when the stale bar made it taller.
+    The fix constrains the scrolling text instead.
+    """
+    body = _function_bodies(CONTENT_JS, r"positionCard")["positionCard"]
+    assert "--pm-card-text-max" in body, \
+        "nothing constrains the card's height to the room beside the composer"
+    assert not re.search(r"Math\.min\(\s*box\.bottom \+ gap", body), \
+        "the card's top is still clamped against the viewport, which walks it over the composer"
+    assert "min(40vh, var(--pm-card-text-max" in STYLES_CSS, \
+        "the height budget positionCard computes is never applied to the text"
