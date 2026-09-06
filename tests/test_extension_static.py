@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTENT_JS = (ROOT / "extension" / "content.js").read_text()
 STYLES_CSS = (ROOT / "extension" / "styles.css").read_text()
 MANIFEST = (ROOT / "extension" / "manifest.json").read_text()
+BACKGROUND_JS = (ROOT / "extension" / "background.js").read_text()
 
 
 def _function_bodies(src: str, name_pattern: str) -> dict:
@@ -436,3 +437,77 @@ def test_toasts_are_placed_above_the_card_not_over_it():
         "positionToasts does not consider both anchors"
     assert "Math.min(...tops)" in body, \
         "the stack is not placed above the highest of card and composer"
+
+
+# ── where sign-in puts you ────────────────────────────────────────────────
+# The auth tab was created from a bare { url } and removed again with nothing
+# activated in its place, so Chrome picked whatever got focus next. Signing in
+# dropped people on an unrelated page — not a redirect to the wrong place, but
+# the absence of one.
+
+
+def _auth() -> str:
+    return _function_bodies(BACKGROUND_JS, r"startGoogleAuth")["startGoogleAuth"]
+
+
+def test_the_auth_flow_was_actually_found():
+    """Guards the extractor — an empty body passes everything below."""
+    assert "chrome.tabs.create" in _auth()
+
+
+def test_sign_in_records_where_the_user_came_from():
+    body = _auth()
+    assert "sender?.tab" in body, \
+        "the options page's own tab is never considered as the origin"
+    assert "lastFocusedWindow" in body, \
+        "the toolbar popup path has no origin tab, since sender.tab is undefined there"
+
+
+def test_the_auth_tab_is_opened_from_the_origin_tab():
+    """
+    openerTabId also requires the opener to be in the same window, so windowId
+    has to travel with it or the create call is rejected.
+    """
+    body = _auth()
+    assert "openerTabId" in body
+    assert "windowId" in body
+
+
+def test_focus_returns_to_the_origin_after_the_auth_tab_closes():
+    body = _auth()
+    assert "restoreOriginTab(origin)" in body, "nothing puts the user back"
+    assert body.index("tabs.remove") < body.index("restoreOriginTab(origin)"), \
+        "focus is restored before the auth tab is closed, which the close then undoes"
+
+
+def test_focus_is_only_restored_when_the_extension_closed_the_tab():
+    """
+    A user who closes the auth tab themselves has chosen where to look. Pulling
+    focus back would override a deliberate action, so the restore belongs on the
+    success path only — not on the cancellation branch.
+    """
+    body = _auth()
+    assert body.count("restoreOriginTab(origin)") == 1
+    assert body.index("restoreOriginTab(origin)") < body.index("Sign-in was cancelled"), \
+        "focus is restored on the cancellation path too"
+
+
+def test_restoring_focus_cannot_fail_a_sign_in_that_succeeded():
+    """The origin tab is free to vanish while Google is loading."""
+    body = _function_bodies(BACKGROUND_JS, r"restoreOriginTab")["restoreOriginTab"]
+    assert "try {" in body and "catch" in body
+
+
+def test_the_origin_tab_is_read_without_needing_the_tabs_permission():
+    """
+    Tab.url and Tab.title are stripped unless the extension holds "tabs" or a
+    host permission for that page — they would read as undefined rather than
+    fail, which is the quiet kind of wrong. Only id/index/windowId are safe, and
+    they are all this needs.
+    """
+    import json
+    body = _auth()
+    for field in ("origin.url", "origin?.url", "origin.title", "origin?.title"):
+        assert field not in body, f"{field} is unavailable without the tabs permission"
+    assert "tabs" not in json.loads(MANIFEST)["permissions"], \
+        "the sign-in fix should not have needed a broader permission"

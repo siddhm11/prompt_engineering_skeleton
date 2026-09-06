@@ -134,7 +134,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "PM_START_GOOGLE_AUTH": {
-          sendResponse(await startGoogleAuth());
+          sendResponse(await startGoogleAuth(sender));
           break;
         }
 
@@ -214,8 +214,44 @@ const AUTH_POLL_TIMEOUT_MS = 4 * 60 * 1000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function startGoogleAuth() {
+/**
+ * Put the user back where they were once sign-in finishes.
+ *
+ * Only ever called after WE closed the auth tab. When the user closes it
+ * themselves they have already chosen where to look, and yanking focus back
+ * would override a deliberate action.
+ */
+async function restoreOriginTab(origin) {
+  if (!origin || origin.id === undefined) return;
+  // The tab is free to disappear while Google is loading. A failure here must
+  // not turn a sign-in that actually succeeded into an error.
+  try {
+    await chrome.tabs.update(origin.id, { active: true });
+    if (origin.windowId !== undefined) {
+      await chrome.windows.update(origin.windowId, { focused: true });
+    }
+  } catch {
+    /* the tab or its window went away; leave focus wherever it landed */
+  }
+}
+
+async function startGoogleAuth(sender) {
   const { apiUrl } = await getSettings();
+
+  // Where to put the user back afterwards.
+  //
+  // Nothing recorded this before. The auth tab was created from a bare { url }
+  // and removed again, with nothing activated in its place, so Chrome was left
+  // to pick whatever got focus next — which is why signing in dropped people on
+  // an unrelated page. It was never a redirect to the wrong place; it was the
+  // absence of one.
+  //
+  // sender.tab is set when the request came from the options page, which opens
+  // in a tab of its own. It is undefined for the toolbar popup, where the tab
+  // the user is actually looking at is the active one behind the popup.
+  const origin =
+    sender?.tab ||
+    (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
 
   let url, state;
   try {
@@ -229,7 +265,15 @@ async function startGoogleAuth() {
     return { ok: false, error: "Sign-in server returned an unexpected response." };
   }
 
-  const tab = await chrome.tabs.create({ url });
+  // Opened next to where the user was and owned by it, so the tab strip reads
+  // as a detour from that page rather than an unrelated tab appended at the end.
+  // openerTabId requires the opener to be in the same window, hence windowId.
+  const tab = await chrome.tabs.create({
+    url,
+    ...(origin?.id !== undefined
+      ? { openerTabId: origin.id, index: origin.index + 1, windowId: origin.windowId }
+      : {}),
+  });
   const deadline = Date.now() + AUTH_POLL_TIMEOUT_MS;
 
   const collect = async () => {
@@ -254,6 +298,9 @@ async function startGoogleAuth() {
     if (tab.id !== undefined) {
       await chrome.tabs.remove(tab.id).catch(() => {});
     }
+    // Explicitly, not by relying on the close. Chrome only *usually* falls back
+    // to the opener, and "usually" is precisely what made this feel random.
+    await restoreOriginTab(origin);
     return { ok: true, email: data.email };
   };
 
