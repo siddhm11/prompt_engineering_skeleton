@@ -343,6 +343,12 @@ OUTPUT_INSTRUCTION = """
   * Do NOT let tech_stack, conversation history, or saved prompts influence the language.
   * Urdu and Hindi are treated as the same language — always output in Hindi (Devanagari/Hinglish).
 - Do NOT hallucinate or invent code. Preserve any code the user included exactly.
+- PLAIN TEXT ONLY. This goes into a chat box, not a markdown renderer — every
+  asterisk shows up literally as an asterisk.
+  * NO **bold**, no *italics*, no __underline__, no ### headings.
+  * Write emphasis into the words instead of marking it up.
+  * Numbered steps and dashed bullets are fine — those read cleanly as plain text.
+  * Code fences are the one exception: keep them when the prompt is about code.
 
 ### FINAL CHECKPOINT (read this last — it overrides everything above if there's any conflict)
 Before you output ANYTHING, ask yourself:

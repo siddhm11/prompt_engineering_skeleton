@@ -363,6 +363,48 @@ _PREAMBLE = re.compile(
 _WRAPPING_FENCE = re.compile(r"\A\s*```[a-zA-Z]*\s*\n(?P<body>.*)\n```\s*\Z", re.S)
 
 
+_MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.M)
+_CODE_SEGMENT = re.compile(r"(```.*?```|`[^`\n]+`)", re.S)
+
+
+def strip_markdown_emphasis(text: str) -> str:
+    """
+    Remove markdown emphasis that a chat composer renders literally.
+
+    The rewrite is pasted into a plain text box, so `**Ladder Operators**`
+    arrives on screen with the asterisks visible. They carry no meaning there —
+    they are instructions to a renderer that is not present.
+
+    Deliberately narrow:
+
+      - Only paired ** is removed. A single asterisk is ambiguous (`2 * 3`, a
+        footnote marker), and __underline__ is not handled at all: it is rare in
+        model output, while `__init__` and other dunders are common in prompts
+        about Python, and mangling those is worse than leaving an underscore in.
+      - Bullets and numbered lists survive; they read fine as plain text and
+        carry real structure.
+      - Content inside code fences and inline backticks is never touched, since
+        the system prompt promises to preserve the user's code exactly, and
+        asterisks are meaningful in most languages.
+      - LaTeX is left alone. Unlike ** it carries information, and the chat
+        apps this targets render it.
+    """
+    if not text or ("*" not in text and "_" not in text and "#" not in text):
+        return text
+
+    out = []
+    for i, segment in enumerate(_CODE_SEGMENT.split(text)):
+        # Odd indices are the captured code segments — pass through untouched.
+        if i % 2 == 1:
+            out.append(segment)
+            continue
+        segment = _MD_BOLD.sub(r"\1", segment)
+        segment = _MD_HEADING.sub("", segment)
+        out.append(segment)
+    return "".join(out)
+
+
 def sanitize_output(text: str) -> str:
     """
     Strip reasoning traces and preamble from a completion.
@@ -381,6 +423,7 @@ def sanitize_output(text: str) -> str:
         cleaned = _ORPHAN_THINK.sub("", cleaned)
     cleaned = _HARMONY.sub("", cleaned)
     cleaned = _PREAMBLE.sub("", cleaned)
+    cleaned = strip_markdown_emphasis(cleaned)
 
     # Unwrap only if the fence encloses the entire response and the body has no
     # fence of its own — otherwise it is the user's code and must survive.
