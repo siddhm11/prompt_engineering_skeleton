@@ -433,6 +433,18 @@ def test_switching_theme_repaints_the_card_and_the_toasts():
     assert "pm-card" in body and "pm-toast-stack" in body
 
 
+def test_lazy_created_modal_inherits_the_current_theme():
+    """A modal created after theme setup must not fall back to dark :root tokens."""
+    body = _function_bodies(CONTENT_JS, r"getOrCreateModalOverlay")["getOrCreateModalOverlay"]
+    assert "data-pm-theme" in body and "pm-panel" in body
+
+
+def test_lazy_created_voice_overlay_inherits_the_current_theme():
+    """The on-demand voice overlay must use the panel's active theme."""
+    body = _function_bodies(CONTENT_JS, r"showVoiceOverlay")["showVoiceOverlay"]
+    assert "data-pm-theme" in body and "pm-panel" in body
+
+
 def test_toasts_are_placed_above_the_card_not_over_it():
     """
     Anchoring to the card alone breaks the empty-chat layout, where the card
@@ -643,6 +655,18 @@ def test_both_clipped_scrollers_are_wired_up():
     for fn in ("showDiffModal", "renderTabContent"):
         body = _function_bodies(CONTENT_JS, fn)[fn]
         assert "markScrollable" in body, f"{fn} never marks its scroller"
+
+
+def test_async_history_render_refreshes_the_scroll_marker():
+    """History arrives after the first measurement and must re-mark its parent."""
+    body = _function_bodies(CONTENT_JS, r"renderHistoryTab")["renderHistoryTab"]
+    assert body.count("markScrollable(container)") >= 2
+
+
+def test_async_feedback_render_refreshes_the_scroll_marker():
+    """Recent feedback arrives asynchronously and can make the tab scrollable."""
+    body = _function_bodies(CONTENT_JS, r"loadRecentFeedback")["loadRecentFeedback"]
+    assert "markScrollable(document.getElementById(\"pm-tab-body\"))" in body
 
 
 # ── the library is reachable without knowing about shift ──────────────────

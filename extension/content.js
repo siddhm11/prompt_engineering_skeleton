@@ -1074,6 +1074,7 @@ function renderHistoryTab(container) {
   fetchEnhanceHistory().then((history) => {
     if (history.length === 0) {
       container.innerHTML = `<div class="pm-prompts-empty">No enhancement history yet.<br>Enhance a prompt to see it here.</div>`;
+      markScrollable(container);
       return;
     }
 
@@ -1111,6 +1112,9 @@ function renderHistoryTab(container) {
 
       container.appendChild(card);
     });
+    // The tab was measured before this async fetch completed. Recalculate the
+    // parent marker now that the history cards are actually in the DOM.
+    markScrollable(container);
   });
 }
 
@@ -1231,6 +1235,7 @@ function loadRecentFeedback() {
   fetchMyFeedback().then((items) => {
     if (items.length === 0) {
       recentContainer.innerHTML = "";
+      markScrollable(document.getElementById("pm-tab-body"));
       return;
     }
 
@@ -1251,6 +1256,8 @@ function loadRecentFeedback() {
       `;
     });
     recentContainer.innerHTML = html;
+    // Recent feedback arrives after renderTabContent's initial measurement.
+    markScrollable(document.getElementById("pm-tab-body"));
   });
 }
 
@@ -2247,6 +2254,13 @@ function getOrCreateModalOverlay() {
     overlay = document.createElement("div");
     overlay.id = "pm-modal-overlay";
     overlay.className = "pm-modal-overlay";
+    // Modals are lazy-created after the panel usually applies the saved theme.
+    // Copy it now so a light-themed session does not fall back to dark :root
+    // tokens before the next theme toggle.
+    overlay.setAttribute(
+      "data-pm-theme",
+      document.getElementById("pm-panel")?.getAttribute("data-pm-theme") || "dark"
+    );
     overlay.innerHTML = `<div class="pm-modal"></div>`;
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) closeModal();
@@ -2720,6 +2734,12 @@ function showVoiceOverlay() {
     overlay = document.createElement("div");
     overlay.id = "pm-voice-overlay";
     overlay.className = "pm-voice-overlay";
+    // The voice screen is also created on demand, so it must inherit the
+    // panel's active theme instead of resolving its variables from :root.
+    overlay.setAttribute(
+      "data-pm-theme",
+      document.getElementById("pm-panel")?.getAttribute("data-pm-theme") || "dark"
+    );
     document.body.appendChild(overlay);
   }
 
