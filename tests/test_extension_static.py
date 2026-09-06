@@ -326,3 +326,113 @@ def test_the_card_is_never_positioned_over_the_composer():
         "the card's top is still clamped against the viewport, which walks it over the composer"
     assert "min(40vh, var(--pm-card-text-max" in STYLES_CSS, \
         "the height budget positionCard computes is never applied to the text"
+
+
+# ── toasts ────────────────────────────────────────────────────────────────
+# Every toast positioned itself, identically: `position: fixed; bottom: 80px;
+# left: 50%`. Two at once therefore landed on the same pixels. Accepting a
+# rewrite did exactly that — applyOrFallback raised "Applied" and the rating
+# prompt covered it a frame later, so the answer to "did that work?" was never
+# visible. And at z-index 100003 against the card's 2147483000, a toast raised
+# while the card was open rendered behind it: ⌘S showed a sliver of "Saved to
+# your library" poking out from under the card it was confirming.
+
+
+def _css_block(selector: str) -> str:
+    """
+    The block for a rule whose selector is exactly `selector`.
+
+    Naive matching grabs the wrong rule: `.pm-toast` also appears as the last
+    entry of a grouped `.pm-panel, ..., .pm-toast { transition: ... }` selector,
+    where it sits at the start of its own line and matches identically. Skipping
+    matches preceded by a comma is what makes this the standalone rule.
+    """
+    for m in re.finditer(re.escape(selector) + r"\s*{([^}]*)}", STYLES_CSS):
+        if STYLES_CSS[: m.start()].rstrip().endswith(","):
+            continue
+        return m.group(1)
+    raise AssertionError(f"no standalone rule for {selector}")
+
+
+def test_the_toast_blocks_were_actually_found():
+    """Guards the extractor — an empty string passes every check below."""
+    assert "position" in _css_block("#pm-toast-stack")
+    assert "padding" in _css_block(".pm-toast")
+
+
+def test_toasts_do_not_position_themselves():
+    """
+    Individually-positioned toasts stack on the same pixels. Layout is the
+    container's job so that two toasts lay out instead of overlapping.
+    """
+    for sel in (".pm-toast", ".pm-feedback-toast"):
+        block = _css_block(sel)
+        assert "position: fixed" not in block, f"{sel} still positions itself"
+        assert "bottom:" not in block, f"{sel} still pins itself to the viewport"
+
+
+def test_the_toast_stack_outranks_the_card():
+    """
+    A toast that loses the z-index race to the card is an invisible message.
+    """
+    stack = _css_block("#pm-toast-stack")
+    card = _css_block(".pm-card")
+    stack_z = int(re.search(r"z-index:\s*(\d+)", stack).group(1))
+    card_z = int(re.search(r"z-index:\s*(\d+)", card).group(1))
+    assert stack_z > card_z, "toasts render behind the card"
+
+
+def test_the_toast_stack_does_not_swallow_clicks():
+    assert "pointer-events: none" in _css_block("#pm-toast-stack")
+    assert "pointer-events: auto" in _css_block(".pm-feedback-toast"), \
+        "the feedback toast has buttons but cannot receive clicks"
+
+
+def test_accepting_raises_one_toast_not_two():
+    """
+    The confirmation and the rating prompt are one event. Two toasts for it
+    meant the second covered the first.
+    """
+    body = _function_bodies(CONTENT_JS, r"acceptCard")["acceptCard"]
+    assert "canRate ? null : " in body, \
+        "applyOrFallback is not told to stay quiet when the feedback toast will confirm"
+    apply_body = _function_bodies(CONTENT_JS, r"applyOrFallback")["applyOrFallback"]
+    assert "if (successMessage) showToast" in apply_body, \
+        "applyOrFallback toasts unconditionally, so accept still fires two"
+
+
+def test_the_rating_prompt_is_skipped_when_it_cannot_be_sent():
+    """Without a log_id the rating goes nowhere; asking anyway spends attention
+    on nothing, and drops the confirmation to show a dead question."""
+    body = _function_bodies(CONTENT_JS, r"acceptCard")["acceptCard"]
+    assert "result.log_id" in body
+
+
+def test_toasts_carry_a_theme():
+    """
+    Toasts set no data-pm-theme at all, so they resolved --pm-bg from :root and
+    rendered dark for everyone regardless of the setting.
+    """
+    body = _function_bodies(CONTENT_JS, r"getOrCreateToastStack")["getOrCreateToastStack"]
+    assert "data-pm-theme" in body and "pm_theme" in body
+
+
+def test_switching_theme_repaints_the_card_and_the_toasts():
+    """
+    applyTheme listed the panel, trigger and overlays but not the card or the
+    toasts — the two surfaces most likely to be on screen when you toggle.
+    """
+    body = _function_bodies(CONTENT_JS, r"applyTheme")["applyTheme"]
+    assert "pm-card" in body and "pm-toast-stack" in body
+
+
+def test_toasts_are_placed_above_the_card_not_over_it():
+    """
+    Anchoring to the card alone breaks the empty-chat layout, where the card
+    renders BELOW the composer — the toast would land on the composer.
+    """
+    body = _function_bodies(CONTENT_JS, r"positionToasts")["positionToasts"]
+    assert "findComposer()" in body and "pm-card" in body, \
+        "positionToasts does not consider both anchors"
+    assert "Math.min(...tops)" in body, \
+        "the stack is not placed above the highest of card and composer"

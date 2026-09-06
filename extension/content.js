@@ -1714,8 +1714,14 @@ async function acceptCard() {
   const text = cardShowingOriginal ? (cardResult.original || cardOriginal) : cardResult.enhanced;
   const result = cardResult;
   closeCard();
-  const applied = await applyOrFallback(text, "Applied");
-  if (applied) showFeedbackToast(result);
+
+  // One event, one toast. The feedback toast carries the confirmation itself,
+  // so applyOrFallback is told to stay quiet on success — but only when there
+  // is actually something to rate. Without a log_id the rating cannot be sent
+  // anywhere, and asking anyway spends the user's attention on nothing.
+  const canRate = Boolean(result.log_id);
+  const applied = await applyOrFallback(text, canRate ? null : "Applied");
+  if (applied && canRate) showFeedbackToast(result);
 }
 
 async function saveCard() {
@@ -1874,58 +1880,144 @@ async function handleReEnhance(editedText, originalText) {
 // SMART SAVE + FEEDBACK TOASTS
 // ══════════════════════════════════════════════════════════════
 
-function showFeedbackToast(result) {
-  const existing = document.getElementById("pm-feedback-toast");
-  if (existing) existing.remove();
+/**
+ * The one place toasts live.
+ *
+ * Every toast used to position itself: `position: fixed; bottom: 80px; left:
+ * 50%`, identically, on every instance. Two at once therefore landed on the
+ * same pixels — which is exactly what accepting a rewrite did, firing the
+ * "Applied" confirmation and the rating prompt together, the rating prompt
+ * covering the confirmation outright.
+ */
+function getOrCreateToastStack() {
+  let stack = document.getElementById("pm-toast-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "pm-toast-stack";
+    document.body.appendChild(stack);
+  }
+  // Toasts never carried a theme at all — they read :root, so they rendered
+  // dark for everyone regardless of the setting. Read on every show rather than
+  // once at creation, so a mid-session theme change is picked up.
+  chrome.storage.local.get("pm_theme", (r) =>
+    stack.setAttribute("data-pm-theme", r.pm_theme || "dark")
+  );
+  return stack;
+}
 
+// Attached once, for the life of the page. positionToasts() is a no-op while
+// no toast is up, so there is nothing to tear down and nothing to leak.
+window.addEventListener("resize", () => positionToasts(), true);
+window.addEventListener("scroll", () => positionToasts(), true);
+
+/**
+ * Sit the stack above whatever the toast is talking about.
+ *
+ * Pinned to `bottom: 80px`, a toast raised while the card was open rendered
+ * behind it — the card outranks the old toast z-index by six orders of
+ * magnitude — so ⌘S showed a sliver of "Saved to your library" poking out from
+ * under the card it was confirming.
+ */
+function positionToasts() {
+  const stack = document.getElementById("pm-toast-stack");
+  if (!stack || !stack.firstChild) return;
+
+  const gap = 10;
+  const margin = 12;
+
+  // The HIGHEST of the two, not just the card. On the empty-chat layout the
+  // card renders BELOW the composer, so anchoring to the card alone would drop
+  // the toast straight onto the composer.
+  const tops = [document.getElementById("pm-card"), findComposer()]
+    .filter(Boolean)
+    .map((el) => el.getBoundingClientRect().top);
+
+  const height = stack.offsetHeight || 44;
+  const top = tops.length
+    ? Math.min(...tops) - gap - height
+    : window.innerHeight - 80 - height;
+
+  stack.style.top = Math.max(margin, top) + "px";
+}
+
+/** Fade a toast out and take it out of the stack. */
+function dismissToast(toast) {
+  toast.classList.remove("pm-toast-visible");
+  setTimeout(() => {
+    toast.remove();
+    const stack = document.getElementById("pm-toast-stack");
+    if (stack && !stack.firstChild) stack.remove();
+  }, 250);
+}
+
+/**
+ * The rewrite landed, and how was it?
+ *
+ * One toast for one event. This used to be the second of two: applyOrFallback
+ * raised "Applied" and this covered it a frame later, so the answer to "did
+ * that work?" was never actually visible. The confirmation is now the first
+ * thing in this toast, and the rating is the favour asked afterwards.
+ */
+function showFeedbackToast(result) {
+  document.getElementById("pm-feedback-toast")?.remove();
+
+  const stack = getOrCreateToastStack();
   const toast = document.createElement("div");
   toast.id = "pm-feedback-toast";
   toast.className = "pm-feedback-toast";
   toast.innerHTML = `
-    <span>How was this enhancement?</span>
-    <button class="pm-fb-btn pm-fb-up" title="Good">👍</button>
-    <button class="pm-fb-btn pm-fb-down" title="Bad">👎</button>
+    <span class="pm-fb-done">\u2713 Applied</span>
+    <span class="pm-fb-sep"></span>
+    <span class="pm-fb-ask">How was it?</span>
+    <button class="pm-fb-btn pm-fb-up" title="Good" aria-label="Good">\u{1F44D}</button>
+    <button class="pm-fb-btn pm-fb-down" title="Bad" aria-label="Bad">\u{1F44E}</button>
+    <button class="pm-fb-close" title="Dismiss" aria-label="Dismiss">\u00D7</button>
   `;
 
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add("pm-toast-visible"));
-
-  const autoDismiss = setTimeout(() => {
-    toast.classList.remove("pm-toast-visible");
-    setTimeout(() => toast.remove(), 300);
-  }, 8000);
-
-  toast.querySelector(".pm-fb-up").addEventListener("click", () => {
-    clearTimeout(autoDismiss);
-    sendFeedback(result.log_id, "up", result.original, result.enhanced);
-    toast.innerHTML = `<span>Thanks! 🎯</span>`;
-    setTimeout(() => { toast.classList.remove("pm-toast-visible"); setTimeout(() => toast.remove(), 300); }, 1500);
+  stack.appendChild(toast);
+  positionToasts();
+  requestAnimationFrame(() => {
+    toast.classList.add("pm-toast-visible");
+    positionToasts();
   });
 
-  toast.querySelector(".pm-fb-down").addEventListener("click", () => {
+  const autoDismiss = setTimeout(() => dismissToast(toast), 8000);
+
+  const answer = (rating, reply) => {
     clearTimeout(autoDismiss);
-    sendFeedback(result.log_id, "down", result.original, result.enhanced);
-    toast.innerHTML = `<span>Got it — we'll improve. 🙏</span>`;
-    setTimeout(() => { toast.classList.remove("pm-toast-visible"); setTimeout(() => toast.remove(), 300); }, 1500);
+    sendFeedback(result.log_id, rating, result.original, result.enhanced);
+    toast.innerHTML = `<span class="pm-fb-done">${reply}</span>`;
+    positionToasts();
+    setTimeout(() => dismissToast(toast), 1400);
+  };
+
+  toast.querySelector(".pm-fb-up").addEventListener("click", () => answer("up", "Thanks \u{1F3AF}"));
+  toast.querySelector(".pm-fb-down").addEventListener("click", () => answer("down", "Got it \u2014 we'll improve."));
+  toast.querySelector(".pm-fb-close").addEventListener("click", () => {
+    clearTimeout(autoDismiss);
+    dismissToast(toast);
   });
 }
 
 function showToast(message, type = "info") {
-  const existing = document.getElementById("pm-toast");
-  if (existing) existing.remove();
+  document.getElementById("pm-toast")?.remove();
 
+  const stack = getOrCreateToastStack();
   const toast = document.createElement("div");
   toast.id = "pm-toast";
   toast.className = `pm-toast pm-toast-${type}`;
   toast.textContent = message;
-  document.body.appendChild(toast);
 
-  requestAnimationFrame(() => toast.classList.add("pm-toast-visible"));
+  // Before the feedback toast when both are up, so the plain status line reads
+  // first and the thing with buttons sits nearest the card.
+  stack.insertBefore(toast, stack.firstChild);
+  positionToasts();
+  requestAnimationFrame(() => {
+    toast.classList.add("pm-toast-visible");
+    positionToasts();
+  });
 
-  setTimeout(() => {
-    toast.classList.remove("pm-toast-visible");
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  setTimeout(() => dismissToast(toast), 3000);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2292,7 +2384,9 @@ async function applyToInput(text) {
  */
 async function applyOrFallback(text, successMessage = "Prompt applied to input!") {
   if (await applyToInput(text)) {
-    showToast(successMessage, "success");
+    // A null message means the caller shows its own confirmation. Without this,
+    // acceptCard raised two toasts for one event and they landed on each other.
+    if (successMessage) showToast(successMessage, "success");
     return true;
   }
   try {
@@ -2590,6 +2684,12 @@ function applyTheme(theme) {
     document.getElementById("pm-trigger"),
     document.querySelector(".pm-modal-overlay"),
     document.querySelector(".pm-voice-overlay"),
+    // The card and the toast stack read the theme when they are built. Left out
+    // of this list they kept whatever theme they were born with, so toggling
+    // the theme with a rewrite on screen recoloured everything except the two
+    // surfaces the user was actually looking at.
+    document.getElementById("pm-card"),
+    document.getElementById("pm-toast-stack"),
   ].filter(Boolean);
   els.forEach((el) => el.setAttribute("data-pm-theme", theme));
 

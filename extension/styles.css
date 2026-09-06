@@ -897,28 +897,54 @@
     50% { opacity: 0; }
 }
 
-/* ── Toast ── */
-.pm-toast {
+/* ── Toasts ──────────────────────────────────────────────────────────────
+   One stack, not a pile. Every toast used to be `position: fixed; bottom:
+   80px; left: 50%` on its own, so any two shown at once landed on the exact
+   same pixels — accepting a rewrite fired "Applied" and the rating prompt
+   together, and the rating prompt (appended second, same z-index) covered the
+   confirmation completely. The stack lays them out instead.
+
+   It also outranks the card. At z-index 100003 against the card's 2147483000,
+   a toast raised while the card was open rendered BEHIND it: pressing ⌘S
+   showed a sliver of "Saved to your library" poking out from under the very
+   card it was confirming. positionToasts() keeps the stack clear of the card,
+   and this z-index means a mistake there degrades to overlap rather than to an
+   invisible message. */
+#pm-toast-stack {
     position: fixed;
-    bottom: 80px;
     left: 50%;
-    transform: translateX(-50%) translateY(10px);
-    padding: 10px 20px;
-    border-radius: 10px;
+    transform: translateX(-50%);
+    z-index: 2147483100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    /* The container spans no more than its widest toast, but it must never
+       swallow a click meant for the page underneath. Interactive toasts opt
+       back in individually. */
+    pointer-events: none;
     font-family: var(--pm-font);
+}
+
+.pm-toast {
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 9px 16px;
+    border-radius: 10px;
     font-size: 13px;
     font-weight: 500;
-    z-index: 100003;
+    line-height: 1.45;
     box-shadow: var(--pm-shadow-md);
     opacity: 0;
-    transition: opacity 250ms ease, transform 250ms ease;
-    pointer-events: none;
-    white-space: nowrap;
+    transform: translateY(6px);
+    transition: opacity 200ms ease, transform 200ms ease;
+    /* Was nowrap, which pushed the longer messages ("Couldn't update the chat
+       box — copied to your clipboard instead.") off both edges of the screen. */
+    text-align: center;
 }
 
 .pm-toast-visible {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
 }
 
 .pm-toast-info {
@@ -928,63 +954,110 @@
 }
 
 .pm-toast-success {
-    background: var(--pm-accent-light);
+    background: var(--pm-bg);
     color: var(--pm-accent);
-    border: 1px solid var(--pm-accent);
+    border: 1px solid var(--pm-border-accent);
 }
 
 .pm-toast-error {
-    background: var(--pm-danger-light);
+    background: var(--pm-bg);
     color: var(--pm-danger);
     border: 1px solid var(--pm-danger);
 }
 
-/* ── Feedback Toast ── */
+/* ── Feedback toast ──
+   Carries the confirmation as well as the question. Accepting a rewrite is one
+   event, so it gets one toast: what happened, then the ask. */
 .pm-feedback-toast {
-    position: fixed;
-    bottom: 80px;
-    left: 50%;
-    transform: translateX(-50%) translateY(10px);
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 16px;
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 7px 8px 7px 14px;
     background: var(--pm-bg);
     border: 1px solid var(--pm-border);
-    border-radius: var(--pm-radius);
+    border-radius: 10px;
     box-shadow: var(--pm-shadow-md);
-    z-index: 100003;
-    font-family: var(--pm-font);
     font-size: 13px;
     color: var(--pm-text-secondary);
     opacity: 0;
-    transition: opacity 300ms ease, transform 300ms ease;
+    transform: translateY(6px);
+    transition: opacity 200ms ease, transform 200ms ease;
+    pointer-events: auto;
 }
 
 .pm-feedback-toast.pm-toast-visible {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
+}
+
+/* The confirmation half. Reads first and in the accent colour, because "did it
+   work" is the question the user actually has; the rating is the favour they
+   are being asked for second. */
+.pm-fb-done {
+    color: var(--pm-accent);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.pm-fb-ask {
+    white-space: nowrap;
+}
+
+.pm-fb-sep {
+    width: 1px;
+    align-self: stretch;
+    margin: 2px 0;
+    background: var(--pm-border);
 }
 
 .pm-fb-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border: 1px solid var(--pm-border);
     border-radius: 8px;
     background: var(--pm-bg-secondary);
     cursor: pointer;
-    font-size: 16px;
+    font-size: 15px;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: background var(--pm-transition), border-color var(--pm-transition), transform var(--pm-transition);
     padding: 0;
+    line-height: 1;
+    flex: none;
 }
 
 .pm-fb-btn:hover {
     background: var(--pm-accent-light);
     border-color: var(--pm-accent);
-    transform: scale(1.1);
+    transform: scale(1.08);
+}
+
+.pm-fb-btn:focus-visible,
+.pm-fb-close:focus-visible {
+    outline: 2px solid var(--pm-accent);
+    outline-offset: 2px;
+}
+
+/* An explicit way out. The toast used to sit for eight seconds with no
+   dismiss, so the only way to get rid of it was to answer it. */
+.pm-fb-close {
+    width: 24px;
+    height: 30px;
+    border: 0;
+    background: none;
+    color: var(--pm-text-muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    border-radius: 6px;
+    flex: none;
+}
+
+.pm-fb-close:hover {
+    color: var(--pm-text);
 }
 
 /* ── Status Messages ── */
