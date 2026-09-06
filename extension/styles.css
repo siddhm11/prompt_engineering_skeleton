@@ -1907,3 +1907,51 @@
     color: var(--pm-text-secondary);
     opacity: .75;
 }
+
+/* ── Stale card ──────────────────────────────────────────────────────────
+   Shown when the composer has moved on from the text this rewrite was built
+   from. Dimmed rather than removed: people often edit *because* of something
+   they read in the rewrite, and deleting the thing they are reacting to at the
+   moment they react to it is hostile. The danger is accepting it, not seeing
+   it — so accept is switched off and the card stays readable. */
+
+.pm-card.pm-card-stale {
+    border-color: var(--pm-warn-border, rgba(201, 148, 89, .34));
+    background: var(--pm-bg-stale, rgba(120, 95, 55, .05));
+}
+
+.pm-card.pm-card-stale .pm-card-text {
+    color: var(--pm-text-muted);
+}
+
+.pm-card-stale-flag {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 17px 11px;
+    padding: 4px 10px;
+    width: fit-content;
+    max-width: calc(100% - 34px);
+    border-radius: 100px;
+    font-size: 10.5px;
+    letter-spacing: .03em;
+    color: var(--pm-warn, #c99459);
+    background: var(--pm-warn-soft, rgba(201, 148, 89, .12));
+    border: 1px solid var(--pm-warn-border, rgba(201, 148, 89, .3));
+}
+
+/* Shown, not hidden: the key still means accept, it simply has nothing safe to
+   accept right now. Removing it would read as the footer changing at random. */
+.pm-card-act.pm-card-disabled {
+    opacity: .34;
+    cursor: not-allowed;
+}
+
+.pm-card-act.pm-card-redo {
+    color: var(--pm-warn, #c99459);
+}
+
+.pm-card-act.pm-card-redo .pm-card-key {
+    color: var(--pm-warn, #c99459);
+    border-color: var(--pm-warn-border, rgba(201, 148, 89, .3));
+}

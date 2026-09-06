@@ -28,7 +28,9 @@ MANIFEST = (ROOT / "extension" / "manifest.json").read_text()
 def _function_bodies(src: str, name_pattern: str) -> dict:
     """Crude brace-matched extraction of top-level `function name(...) {...}`."""
     out = {}
-    for m in re.finditer(rf"^function ({name_pattern})\s*\([^)]*\)\s*{{", src, re.M):
+    # `async function` too — missing it silently returned an empty dict, and
+    # every assertion built on that dict then passed by looking at nothing.
+    for m in re.finditer(rf"^(?:async\s+)?function ({name_pattern})\s*\([^)]*\)\s*{{", src, re.M):
         name, i, depth = m.group(1), m.end() - 1, 0
         while i < len(src):
             if src[i] == "{":
@@ -161,3 +163,67 @@ def test_card_keymap_does_not_hijack_tab_when_closed():
     guard = CONTENT_JS.index('if (cardState === "idle") return;')
     tab = CONTENT_JS.index('if (e.key === "Tab")', guard)
     assert guard < tab, "the idle guard must precede the Tab handler"
+
+
+# ── stale rewrites ────────────────────────────────────────────────────────
+# Editing the composer after a rewrite arrives leaves the card showing a
+# rewrite of text that no longer exists. Accepting it then replaces what the
+# user just typed — and reports success, correctly, because the write did land.
+# Their work is what gets destroyed, so this is data loss, not untidiness.
+
+def test_function_extraction_finds_async_functions():
+    """Guards the helper itself. It matched only `function foo(`, so an async
+    function came back as an empty dict and every assertion over it was
+    vacuous."""
+    assert "acceptCard" in _function_bodies(CONTENT_JS, r"acceptCard")
+
+
+def test_accept_refuses_a_stale_rewrite():
+    """The guard has to be inside acceptCard, not only on the keyboard path —
+    the footer button calls it directly."""
+    body = _function_bodies(CONTENT_JS, r"acceptCard")["acceptCard"]
+    assert "cardStale" in body, "acceptCard does not check staleness at all"
+    guard = body.index("cardStale")
+    write = body.index("applyOrFallback")
+    assert guard < write, "the staleness guard must precede the write"
+
+
+def test_staleness_is_tracked_as_text_not_a_flag():
+    """
+    A boolean 'edited' flag cannot be un-set: undoing an edit would strand the
+    card as stale forever, and a trailing space would trigger it. Comparing
+    normalised text makes undo restore freshness for free.
+    """
+    body = _function_bodies(CONTENT_JS, r"refreshCardStaleness")["refreshCardStaleness"]
+    assert "cardBasedOn" in body and "norm(" in body, \
+        "staleness is not a normalised text comparison"
+
+
+def test_editing_is_actually_listened_for():
+    assert 'addEventListener("input", refreshCardStaleness' in CONTENT_JS, \
+        "nothing recomputes staleness when the composer changes"
+
+
+def test_redo_is_manual_not_automatic():
+    """
+    Re-running on every keystroke would spend a real model call per character
+    against a ration of fifteen a day.
+    """
+    body = _function_bodies(CONTENT_JS, r"refreshCardStaleness")["refreshCardStaleness"]
+    assert "handleEnhance" not in body, "staleness detection triggers an enhancement"
+
+
+def test_the_stale_card_is_visually_distinct_and_labelled():
+    assert "pm-card-stale" in CONTENT_JS
+    assert "pm-card-stale-flag" in CONTENT_JS, "stale state is dimmed but never explained"
+    assert re.search(r"\.pm-card\.pm-card-stale\s*{", STYLES_CSS), \
+        "the stale class has no styling, so the state is invisible"
+
+
+def test_a_rewrite_in_flight_lands_stale_if_the_prompt_moved():
+    """
+    Staleness is recomputed at render time rather than only on edit, so a
+    rewrite the user edited underneath arrives dimmed instead of fresh-and-wrong.
+    """
+    body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
+    assert "cardStale =" in body and "getCurrentInputText()" in body

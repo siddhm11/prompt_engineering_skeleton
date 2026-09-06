@@ -1398,6 +1398,15 @@ let cardShowingOriginal = false;
 let cardOriginal = "";
 let cardReposition = null;
 
+// The composer text this rewrite was actually built from, normalised.
+//
+// Tracked as TEXT rather than as an "edited" flag on purpose. A flag cannot be
+// un-set: undoing an edit would leave the card stranded as stale forever, and a
+// stray trailing space would trigger it. Comparing text means undo restores the
+// card to fresh for free, and whitespace churn is invisible.
+let cardBasedOn = "";
+let cardStale = false;
+
 function getOrCreateCard() {
   let card = document.getElementById("pm-card");
   if (!card) {
@@ -1472,6 +1481,8 @@ function closeCard() {
   cardState = "idle";
   cardResult = null;
   cardShowingOriginal = false;
+  cardBasedOn = "";
+  cardStale = false;
 }
 
 function cardFoot(parts) {
@@ -1483,6 +1494,8 @@ const cardKey = (k) => `<span class="pm-card-key">${k}</span>`;
 // ── Entry point 1: the flow is starting ──
 function showStreamingDiffModal(originalText) {
   cardOriginal = originalText;
+  cardBasedOn = norm(originalText);
+  cardStale = false;
   cardState = "streaming";
   cardShowingOriginal = false;
   openCard(
@@ -1530,9 +1543,22 @@ function showDiffModal(result) {
   cardState = "ready";
   lastEnhanceResult = result;
 
+  // Entry points other than the streaming flow (voice, history) never set this.
+  if (!cardBasedOn) cardBasedOn = norm(result.original || cardOriginal || "");
+
+  // Recomputed on every render, so a rewrite that was in flight while the user
+  // edited arrives stale rather than appearing fresh and wrong.
+  cardStale = Boolean(cardBasedOn) && norm(getCurrentInputText()) !== cardBasedOn;
+
   const body = cardShowingOriginal
     ? `<div class="pm-card-text pm-card-original">${escHtml(result.original || cardOriginal)}</div>`
     : `<div class="pm-card-text">${escHtml(result.enhanced)}</div>`;
+
+  // Named rather than merely dimmed. "Why is this greyed out" is a worse
+  // question to leave a user holding than one line of explanation.
+  const staleFlag = cardStale
+    ? `<div class="pm-card-stale-flag">\u26A0 prompt changed \u2014 this rewrite is for the earlier text</div>`
+    : "";
 
   // Only shown when a saved prompt actually shaped the rewrite. The old footer
   // printed four zeros on every result, which teaches people to stop reading it.
@@ -1559,20 +1585,32 @@ function showDiffModal(result) {
     ? `<span class="pm-card-meta" style="color:var(--pm-danger)">cut short</span>`
     : `<span class="pm-card-meta">${result.latency ? result.latency + "s" : ""}</span>`;
 
-  openCard(
-    body + chip +
-    cardFoot([
-      `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`,
-      `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
-      `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
-      `<button class="pm-card-act" id="pm-card-save">${cardKey("\u2318S")} save</button>`,
-      `<span class="pm-card-spacer"></span>`,
-      truncatedNote,
-    ])
-  );
+  const actions = cardStale
+    ? [
+        // Accept is shown, not hidden: the key still means accept, it simply
+        // has nothing safe to accept. Hiding it would just look like the
+        // footer changed for no reason.
+        `<span class="pm-card-act pm-card-disabled" title="The prompt changed — redo first">${cardKey("Tab")} accept</span>`,
+        `<button class="pm-card-act pm-card-redo" id="pm-card-redo">${cardKey("\u2318\u21B5")} redo</button>`,
+        `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
+        `<span class="pm-card-spacer"></span>`,
+        `<span class="pm-card-meta">stale</span>`,
+      ]
+    : [
+        `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${cardKey("Tab")} accept</button>`,
+        `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} dismiss</button>`,
+        `<button class="pm-card-act" id="pm-card-toggle">${cardKey("\\")} ${cardShowingOriginal ? "rewrite" : "original"}</button>`,
+        `<button class="pm-card-act" id="pm-card-save">${cardKey("\u2318S")} save</button>`,
+        `<span class="pm-card-spacer"></span>`,
+        truncatedNote,
+      ];
+
+  const card = openCard(body + staleFlag + chip + cardFoot(actions));
+  card.classList.toggle("pm-card-stale", cardStale);
 
   document.getElementById("pm-card-accept")?.addEventListener("click", acceptCard);
   document.getElementById("pm-card-close")?.addEventListener("click", closeCard);
+  document.getElementById("pm-card-redo")?.addEventListener("click", redoCard);
   document.getElementById("pm-card-toggle")?.addEventListener("click", () => {
     cardShowingOriginal = !cardShowingOriginal;
     showDiffModal(cardResult);
@@ -1580,9 +1618,48 @@ function showDiffModal(result) {
   document.getElementById("pm-card-save")?.addEventListener("click", saveCard);
 }
 
+/**
+ * Re-run against what is in the composer now.
+ *
+ * Deliberately manual. Re-running automatically as the user types would spend a
+ * real model call per keystroke against a ration of fifteen a day, and would
+ * always be a second or two behind — replacing itself with rewrites of
+ * half-finished sentences.
+ */
+function redoCard() {
+  closeCard();
+  handleEnhance();
+}
+
+/**
+ * Recompute staleness against the live composer.
+ *
+ * Only re-renders on a transition, so typing does not rebuild the card on every
+ * keystroke.
+ */
+function refreshCardStaleness() {
+  if (cardState !== "ready" || !cardResult) return;
+  const stale = Boolean(cardBasedOn) && norm(getCurrentInputText()) !== cardBasedOn;
+  if (stale === cardStale) return;
+  cardStale = stale;
+  showDiffModal(cardResult);
+}
+
+// The whole mechanism. Listening for edits anywhere is fine because
+// refreshCardStaleness() is a no-op unless a finished rewrite is on screen.
+document.addEventListener("input", refreshCardStaleness, true);
+
 /** Write the rewrite into the composer. */
 async function acceptCard() {
   if (cardState !== "ready" || !cardResult) return;
+  if (cardStale) {
+    // The dangerous action. Accepting here would replace what the user just
+    // typed with a rewrite of text that no longer exists — and it would report
+    // success, correctly, because the write really did land. Their work is what
+    // would be destroyed.
+    showToast("The prompt changed — press ⌘↵ to redo it first.", "error");
+    return;
+  }
   const text = cardShowingOriginal ? (cardResult.original || cardOriginal) : cardResult.enhanced;
   const result = cardResult;
   closeCard();
@@ -1608,7 +1685,20 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCard(); return; }
   if (cardState !== "ready") return;
 
-  if (e.key === "Tab") { e.preventDefault(); e.stopPropagation(); acceptCard(); return; }
+  // Redo, while the card is open. Scoped to the card's lifetime so the chord
+  // keeps its normal meaning on the host page the rest of the time.
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault(); e.stopPropagation(); redoCard(); return;
+  }
+
+  if (e.key === "Tab") {
+    e.preventDefault(); e.stopPropagation();
+    // Tab means accept, always. When there is nothing safe to accept it does
+    // nothing and says why — a key that sometimes accepts and sometimes spends
+    // quota is a key you stop trusting.
+    acceptCard();
+    return;
+  }
   if (e.key === "\\") {
     e.preventDefault(); e.stopPropagation();
     cardShowingOriginal = !cardShowingOriginal;
