@@ -217,23 +217,26 @@ def enhance_prompt(request: EnhanceRequest, user_id: str = Depends(enhance_limit
     process_time = round(time.time() - ctx["start_time"], 2)
     
     # Log the enhancement; DO NOT memorize here. Memorization happens on /enhance/accept.
+    # Always logged, whatever tracking_enabled says: this log is the user's
+    # History, the log_id that accept and feedback point at, and the count the
+    # daily limit reads. Prompt tracking only governs prompts sent normally to
+    # a chat (/track); gating this on it gave anyone who switched tracking off
+    # unlimited rewrites on the shared key and an empty History.
     max_similarity = ctx["similar_saved"][0]["score"] if ctx["similar_saved"] else 0.0
-    log_id = None
-    if request.tracking_enabled:
-        log_id = MemoryService.log_prompt(
-            user_id=user_id,
-            original=request.prompt,
-            enhanced=enhanced_prompt,
-            score=max_similarity,
-            latency=process_time,
-            mode=ctx["mode"],
-            platform=request.platform,
-            provider=result.get("provider"),
-            model=result.get("model"),
-            byok=result.get("byok", False),
-            input_method="voice" if request.input_method == "voice" else "text",
-            input_duration_seconds=request.input_duration_seconds,
-        )
+    log_id = MemoryService.log_prompt(
+        user_id=user_id,
+        original=request.prompt,
+        enhanced=enhanced_prompt,
+        score=max_similarity,
+        latency=process_time,
+        mode=ctx["mode"],
+        platform=request.platform,
+        provider=result.get("provider"),
+        model=result.get("model"),
+        byok=result.get("byok", False),
+        input_method="voice" if request.input_method == "voice" else "text",
+        input_duration_seconds=request.input_duration_seconds,
+    )
 
     logger.info(f"   ✅ Enhanced in {process_time}s — {len(enhanced_prompt)} chars")
 
@@ -315,21 +318,21 @@ def enhance_prompt_stream(request: EnhanceRequest, user_id: str = Depends(enhanc
         log_id = None
         if enhanced_prompt.strip():
             max_similarity = ctx["similar_saved"][0]["score"] if ctx["similar_saved"] else 0.0
-            if request.tracking_enabled:
-                log_id = MemoryService.log_prompt(
-                    user_id=user_id,
-                    original=request.prompt,
-                    enhanced=enhanced_prompt,
-                    score=max_similarity,
-                    latency=process_time,
-                    mode=ctx["mode"],
-                    platform=request.platform,
-                    provider=meta.get("provider"),
-                    model=meta.get("model"),
-                    byok=meta.get("byok", False),
-                    input_method="voice" if request.input_method == "voice" else "text",
-                    input_duration_seconds=request.input_duration_seconds,
-                )
+            # Always logged; see enhance_prompt for why tracking does not gate this.
+            log_id = MemoryService.log_prompt(
+                user_id=user_id,
+                original=request.prompt,
+                enhanced=enhanced_prompt,
+                score=max_similarity,
+                latency=process_time,
+                mode=ctx["mode"],
+                platform=request.platform,
+                provider=meta.get("provider"),
+                model=meta.get("model"),
+                byok=meta.get("byok", False),
+                input_method="voice" if request.input_method == "voice" else "text",
+                input_duration_seconds=request.input_duration_seconds,
+            )
             # Generation only creates a prompt log. Memorization happens on /enhance/accept.
         elif not failure:
             failure = "The model returned an empty response."
