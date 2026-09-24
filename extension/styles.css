@@ -2421,3 +2421,11 @@
     .pm-tip { transition: none; }
     .pm-trigger.pm-pill-hint { animation: none; }
 }
+
+/* Windows draws classic 17px scrollbars; on the card and its lists they took
+   a noticeable bite out of a 600px-wide object. Thin, and in the console's
+   colours, everywhere the extension scrolls. */
+.pm-card, .pm-card-text, .pm-card-used-list, .pm-caret-list, .pm-tip {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, .16) transparent;
+}
