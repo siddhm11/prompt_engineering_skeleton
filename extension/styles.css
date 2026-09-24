@@ -618,6 +618,12 @@
     font-size: 13px;
     line-height: 1.6;
     color: var(--pm-text-secondary);
+}
+/* Only the plain-text message keeps its own line breaks. On the modals built
+   from indented HTML (setup, consent, edit), pre-wrap rendered every newline
+   and indent of the template as blank space: the setup modal opened with
+   gaps and pushed "Sign in with Google" below the fold. */
+.pm-modal-body.pm-modal-text {
     white-space: pre-wrap;
 }
 

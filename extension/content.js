@@ -4132,7 +4132,7 @@ function showModal(title, body, buttons = []) {
       <span class="pm-modal-title">${escHtml(title)}</span>
       <button class="pm-header-close pm-modal-close-btn">×</button>
     </div>
-    <div class="pm-modal-body">${escHtml(body)}</div>
+    <div class="pm-modal-body pm-modal-text">${escHtml(body)}</div>
     <div class="pm-modal-footer">${footerBtns}</div>
   `;
 
