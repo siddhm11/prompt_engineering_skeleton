@@ -982,6 +982,7 @@ function c0(el) {
 function placePill() {
   const pill = document.getElementById("pm-trigger");
   if (!pill) return;
+  requestAnimationFrame(positionTip);
   _c0cache = null;
   const maxBottom = Math.max(PILL_MARGIN, window.innerHeight - pill.offsetHeight - PILL_MARGIN);
   pillBottom = Math.min(Math.max(PILL_MARGIN, pillBottom), maxBottom);
@@ -1352,6 +1353,7 @@ function createLibrary() {
 }
 
 function togglePanel(force) {
+  hideTip();
   const lib = document.getElementById("pm-library");
   if (!lib) return;
   const open = force !== undefined ? Boolean(force) : !panelOpen;
@@ -1549,6 +1551,7 @@ function libBodyHtml() {
       row("pm-tracking-toggle", promptTrackingEnabled, "Prompt tracking", "Logs the prompts you send on these sites to improve future suggestions.") +
       row("pm-context-toggle", contextEnabled, "Conversation context", "Reads recent messages in this chat when you ask for a rewrite, for that request only.") +
       row("pm-slash-toggle", slashEnabled, "Type // for saved prompts", "Opens your saved prompts at the cursor in the chat box.") +
+      row("pm-tips-toggle", !tips.off, "Tips on the page", "Short hints the first time you use each feature.") +
       `</div>`;
   }
   if (libPage === "feedback") {
@@ -1697,6 +1700,8 @@ async function libInsert(text, logId) {
 async function libSaveText(text) {
   const outcome = await createSavedPrompt(text, "", []);
   if (outcome === "saved") {
+    statsBump("saves");
+    tipDone("save");
     await fetchSavedPrompts();
     showToast("Saved to your library", "success");
   } else {
@@ -1819,6 +1824,7 @@ function onLibraryChange(e) {
   if (id === "pm-tracking-toggle") { promptTrackingEnabled = e.target.checked; storageSet({ pm_tracking: promptTrackingEnabled }); }
   if (id === "pm-context-toggle") { contextEnabled = e.target.checked; storageSet({ pm_context: contextEnabled }); }
   if (id === "pm-slash-toggle") { slashEnabled = e.target.checked; storageSet({ pm_slash: slashEnabled }); }
+  if (id === "pm-tips-toggle") { tips.off = !e.target.checked; storageSet({ pm_tips_off: tips.off }); if (tips.off) hideTip(); }
 }
 
 function onLibraryKeydown(e) {
@@ -2222,6 +2228,8 @@ async function slashInsert() {
   const landed = norm(after).includes(norm(p.content)) && !norm(after).includes(norm(token));
   if (!landed && expected !== null) await applyOrFallback(expected, null);
   showApplied(null);
+  statsBump("slash");
+  tipDone("slash");
 }
 
 function slashAttach() {
@@ -2298,6 +2306,7 @@ function onComposerChanged() {
     checkSlash();
     refreshCardStaleness();
     positionRail();
+    tipsOnComposerChanged();
   });
 }
 
@@ -2308,6 +2317,9 @@ function setupLibraryListeners() {
     if (composer && (e.target === composer || composer.contains(e.target))) {
       checkSlash();
       requestAnimationFrame(positionRail);
+      // A <textarea> composer changes its value, not its DOM, so the
+      // MutationObserver never fires for it: the tips hear typing here too.
+      tipsOnComposerChanged();
     }
   }, true);
   // The caret moving (a click, an arrow key) opens or closes // too, and it is
@@ -3141,6 +3153,7 @@ function positionCard() {
 }
 
 function openCard(innerHTML) {
+  hideTip();   // the card is what the user is looking at now
   const card = getOrCreateCard();
   const focusedId = card.contains(document.activeElement) ? document.activeElement.id : null;
   card._pmEndGesture?.();
@@ -3301,6 +3314,8 @@ function finalizeStreamingModal(result) {
   // Cancelled — or replaced by something else — while the tokens were still
   // arriving. The result is dropped; it is no longer the draft.
   if (cardState !== "streaming") return;
+  statsBump("rewrites");
+  tipDone("meet");
   if (cardRerunFrom) {
     cardVersions = [...cardRerunFrom.versions, result];
     cardRerunFrom = null;
@@ -3473,7 +3488,7 @@ function showDiffModal(result) {
 
   // The bar goes above the body: it qualifies the whole card, and a status
   // printed underneath the thing it qualifies is read too late to help.
-  const card = openCard(head + body + chip + cardStyleRow(result) + cardFoot(actions));
+  const card = openCard(head + body + cardTipHtml() + chip + cardStyleRow(result) + cardFoot(actions));
   card.classList.toggle("pm-card-stale", cardStale);
 
   const textEl = card.querySelector(".pm-card-text");
@@ -3497,6 +3512,11 @@ function showDiffModal(result) {
     b.addEventListener("click", () => rerunInStyle(b.dataset.pmStyle)));
   document.getElementById("pm-card-ver-prev")?.addEventListener("click", () => stepVersion(-1));
   document.getElementById("pm-card-ver-next")?.addEventListener("click", () => stepVersion(1));
+  document.getElementById("pm-card-tip-x")?.addEventListener("click", () => {
+    tipDone("card");
+    document.getElementById("pm-card-tip")?.remove();
+    positionCard();
+  });
   document.getElementById("pm-card-used-toggle")?.addEventListener("click", (e) => {
     cardUsedOpen = !cardUsedOpen;
     e.currentTarget.setAttribute("aria-expanded", String(cardUsedOpen));
@@ -3622,6 +3642,7 @@ async function rerunWithout(id, title) {
 
 /** A new version of this draft; the versions already made are kept. */
 async function rerunDraft(style, excluded = []) {
+  tipDone("card");   // they found the style buttons
   if (enhanceInFlight) {
     showToast("Already enhancing \u2014 hang on a moment.", "info");
     return;
@@ -3724,6 +3745,11 @@ async function acceptCard() {
   // asks how it was — in the object the user was already looking at, rather
   // than a toast beside a pill that had just collapsed.
   if (applied) showApplied(canRate ? result : null);
+  if (applied) {
+    tipDone("card");
+    statsBump("inserts");
+    maybeTipSave();
+  }
   if (applied && applyingEnhanced && result.log_id) {
     await approveEnhancement(result.log_id);
   }
@@ -3776,7 +3802,7 @@ async function saveCard() {
   }
   const saved = outcome === "saved";
   showToast(saved ? "Saved to your library" : "Could not save", saved ? "success" : "error");
-  if (saved) fetchSavedPrompts();
+  if (saved) { fetchSavedPrompts(); statsBump("saves"); tipDone("save"); }
 }
 
 // ── Keymap ──
@@ -4987,6 +5013,265 @@ function applyTheme(theme) {
 // INIT
 // ══════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+// FIRST-RUN TIPS
+// ══════════════════════════════════════════════════════════════
+//
+// New users did not know what to do: the only trace of the extension on a
+// chat page is a small ⊕ in the corner, and nothing ever said what it was or
+// what came next. A tip is a short note pinned to the pill, shown at the
+// moment it is useful:
+//
+//   meet   first visits, before any rewrite: what ⊕ does (or "set it up")
+//   card   inside the first rewrite's card: Replace, and the style buttons
+//   save   after the first Replace: how to keep and reuse a good prompt
+//   slash  signed in, with saved prompts, never used //: type // to insert
+//
+// Rules: one at a time; never while the card, the library or a dialog is up;
+// never takes focus; each retires when the user does the thing, dismisses
+// it, or has seen it TIP_MAX_SHOWS times. All tips can be switched off in the
+// popup or the library's Privacy settings. Stored locally only.
+
+const TIP_MAX_SHOWS = 3;
+const tips = { loaded: false, off: false, seen: {}, shows: {}, stats: {} };
+let activeTip = null;          // { id, el }
+let meetTimer = null;
+
+function loadTips() {
+  return new Promise((resolve) => {
+    storageGet(["pm_tips_off", "pm_tips", "pm_tip_shows", "pm_stats"], (r) => {
+      tips.off = r.pm_tips_off === true;
+      tips.seen = r.pm_tips || {};
+      tips.shows = r.pm_tip_shows || {};
+      tips.stats = r.pm_stats || {};
+      tips.loaded = true;
+      resolve();
+    });
+  });
+}
+
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.pm_tips_off) {
+      tips.off = changes.pm_tips_off.newValue === true;
+      if (tips.off) hideTip();
+    }
+    // "Show tips again" in the popup clears the record.
+    if (changes.pm_tips) tips.seen = changes.pm_tips.newValue || {};
+    if (changes.pm_tip_shows) tips.shows = changes.pm_tip_shows.newValue || {};
+    if (changes.pm_stats) tips.stats = changes.pm_stats.newValue || {};
+  });
+} catch (error) { onOrphaned(error); }
+
+/** Count something the user did, for the tips and the popup's "try it now". */
+function statsBump(key) {
+  tips.stats = { ...tips.stats, [key]: (tips.stats[key] || 0) + 1 };
+  storageSet({ pm_stats: tips.stats });
+}
+
+/** The user did what a tip was for, or dismissed it: it does not come back. */
+function tipDone(id) {
+  if (!tips.seen[id]) {
+    tips.seen = { ...tips.seen, [id]: Date.now() };
+    storageSet({ pm_tips: tips.seen });
+  }
+  if (activeTip?.id === id) hideTip();
+}
+
+function tipAllowed(id) {
+  return tips.loaded && !tips.off && !tips.seen[id] && (tips.shows[id] || 0) < TIP_MAX_SHOWS &&
+    !cardExpanded && !panelOpen && !slash && !overlayHasInput() &&
+    Boolean(document.getElementById("pm-trigger"));
+}
+
+const TIP_X_SVG = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"/></svg>';
+// What the rewrite shortcut really is, asked of the worker (content scripts
+// cannot read chrome.commands). "" when Chrome left it unassigned.
+let assignedShortcut = null;
+async function loadShortcut() {
+  const r = await askWorker({ type: "PM_GET_SHORTCUT" });
+  assignedShortcut = typeof r?.shortcut === "string" ? r.shortcut : null;
+}
+/** " (or <kbd>…</kbd>)", or "" when there is no shortcut to name. */
+function orShortcut() {
+  if (assignedShortcut === null) return ` (or <kbd>${IS_MAC ? "⌘⇧E" : "Ctrl+Shift+E"}</kbd>)`;
+  return assignedShortcut ? ` (or <kbd>${escHtml(assignedShortcut)}</kbd>)` : "";
+}
+
+/**
+ * Pin a tip to the pill. `actions`: [{ label, primary, run }]; running one
+ * retires the tip. × and Esc retire it too: "not now" is an answer.
+ */
+function showTip(id, { title, body, actions = [], autoHideMs = 0, hint = false }) {
+  hideTip();
+  const el = document.createElement("div");
+  el.id = "pm-tip";
+  el.className = "pm-tip";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-live", "polite");
+  el.setAttribute("aria-label", title);
+  el.dataset.tip = id;
+  el.innerHTML =
+    `<button type="button" class="pm-tip-x" aria-label="Dismiss this tip" title="Dismiss">${TIP_X_SVG}</button>` +
+    `<p class="pm-tip-title">${escHtml(title)}</p><p class="pm-tip-body">${body}</p>` +
+    (actions.length
+      ? `<div class="pm-tip-actions">${actions.map((a, i) =>
+          `<button type="button" class="pm-tip-btn${a.primary ? " pm-tip-primary" : ""}" data-i="${i}">${escHtml(a.label)}</button>`).join("")}</div>`
+      : "");
+  el.querySelector(".pm-tip-x").addEventListener("click", () => tipDone(id));
+  el.querySelectorAll(".pm-tip-btn").forEach((b) => b.addEventListener("click", () => {
+    const action = actions[Number(b.dataset.i)];
+    tipDone(id);
+    action?.run?.();
+  }));
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); tipDone(id); }
+  });
+  document.body.appendChild(el);
+  activeTip = { id, el, timer: autoHideMs ? setTimeout(() => { if (activeTip?.el === el) hideTip(); }, autoHideMs) : null };
+  tips.shows = { ...tips.shows, [id]: (tips.shows[id] || 0) + 1 };
+  storageSet({ pm_tip_shows: tips.shows });
+  if (hint) document.getElementById("pm-trigger")?.classList.add("pm-pill-hint");
+  positionTip();
+  requestAnimationFrame(() => el.classList.add("pm-tip-visible"));
+}
+
+function hideTip() {
+  if (!activeTip) return;
+  clearTimeout(activeTip.timer);
+  activeTip.el.remove();
+  activeTip = null;
+  document.getElementById("pm-trigger")?.classList.remove("pm-pill-hint");
+}
+
+/** Beside the pill: above it when there is room (it lives low on the page). */
+function positionTip() {
+  const el = activeTip?.el;
+  const pill = document.getElementById("pm-trigger");
+  if (!el || !pill) return;
+  const p = pill.getBoundingClientRect();
+  const w = el.offsetWidth, h = el.offsetHeight, gap = 12, m = 12;
+  const above = p.top - gap - h >= m || p.top > window.innerHeight / 2;
+  const top = above ? p.top - gap - h : p.bottom + gap;
+  // Aligned to the pill's edge on its docked side, so the tip grows inward.
+  let left = pillDock === "left" ? p.left : p.right - w;
+  left = Math.max(m, Math.min(left, window.innerWidth - w - m));
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(Math.max(m, top))}px`;
+  el.dataset.side = above ? "above" : "below";
+  const arrow = Math.max(14, Math.min(w - 24, p.left + p.width / 2 - left - 5));
+  el.style.setProperty("--pm-tip-arrow", `${Math.round(arrow)}px`);
+}
+
+/** Tip 1: what the ⊕ is. Shown on a chat page until the first rewrite. */
+async function maybeTipMeet() {
+  if (!tipAllowed("meet") || (tips.stats.rewrites || 0) > 0 || cardState !== "idle" || !findComposer()) return;
+  const route = await askWorker({ type: "PM_GET_ROUTE" });
+  if (!route || !tipAllowed("meet") || cardState !== "idle") return;
+  const PLUS = "<b>⊕</b>";
+  if (route.route === "none" || route.route === "expired") {
+    showTip("meet", {
+      title: "Prompt Memory is ready to set up",
+      body: `It turns a rough draft into a clearer prompt when you press ${PLUS}. Choose Google or your own free key first, which takes about a minute.`,
+      actions: [{ label: "Set it up", primary: true, run: () => showSetupRequiredModal() }, { label: "Not now" }],
+      hint: true,
+    });
+    return;
+  }
+  const typed = norm(getCurrentInputText()).length >= 3;
+  showTip("meet", typed
+    ? {
+        title: "Want a clearer version of this?",
+        body: `Press ${PLUS}${orShortcut()}. You'll see the rewrite first; your draft only changes if you choose Replace.`,
+        actions: [{ label: "Rewrite it", primary: true, run: () => handleEnhance() }, { label: "Not now" }],
+        hint: true,
+      }
+    : {
+        title: "This is Prompt Memory",
+        body: `Type your prompt as usual, then press ${PLUS}${orShortcut()} for a clearer version. You review it before anything changes.` +
+          (assignedShortcut === "" ? " Its keyboard shortcut is not set yet: another extension may be using it." : ""),
+        actions: assignedShortcut === ""
+          ? [{ label: "Got it" }, { label: "Set a shortcut", run: () => askWorker({ type: "PM_OPEN_SHORTCUTS" }) }]
+          : [{ label: "Got it" }],
+        hint: true,
+      });
+}
+
+/** While the meet tip is up, keep its wording in step with the chat box. */
+function tipsOnComposerChanged() {
+  if (activeTip?.id === "meet") {
+    const typed = norm(getCurrentInputText()).length >= 3;
+    const says = activeTip.el.querySelector(".pm-tip-title")?.textContent || "";
+    if (typed !== says.startsWith("Want")) {
+      tips.shows = { ...tips.shows, meet: Math.max(0, (tips.shows.meet || 1) - 1) };   // same showing
+      maybeTipMeet();
+    }
+  }
+  if (!activeTip) maybeTipSlash();
+}
+
+/** Tip 2 (inside the card): the markup, or "" once it has done its job. */
+function cardTipHtml() {
+  if (!tips.loaded || tips.off || tips.seen.card || cardSubject || cardShowingOriginal || cardStale) return "";
+  return `<div class="pm-card-tip" id="pm-card-tip"><span><b>Replace draft</b> puts this in your chat box. Not quite right? ` +
+    `The buttons below make another version, and every version is kept.</span>` +
+    `<button type="button" id="pm-card-tip-x" aria-label="Dismiss this tip" title="Dismiss">${TIP_X_SVG}</button></div>`;
+}
+
+/** Tip 3: after the first Replace, how to keep a prompt that worked. */
+function maybeTipSave() {
+  if ((tips.stats.inserts || 0) !== 1) return;
+  setTimeout(() => {
+    if (!tipAllowed("save")) return;
+    if (libSignedIn) {
+      showTip("save", {
+        title: "Keep the prompts that work",
+        body: `Press <kbd>${IS_MAC ? "⌘" : "Ctrl+"}S</kbd> on a rewrite to save it. Your saved prompts live in <b>Library</b>, beside ${"<b>⊕</b>"}.`,
+        actions: [{ label: "Got it" }],
+        autoHideMs: 16000,
+      });
+    } else {
+      showTip("save", {
+        title: "Keep the prompts that work",
+        body: "Sign in to save good prompts and reuse them in any chat by typing <b>//</b>. Your own key keeps working either way.",
+        actions: [{ label: "Sign in", primary: true, run: () => openSettings("signin") }, { label: "Not now" }],
+        autoHideMs: 16000,
+      });
+    }
+  }, 1600);
+}
+
+/** Tip 4: signed in, with saved prompts, and // never used. */
+let slashTipChecked = false;
+async function maybeTipSlash() {
+  if (!tipAllowed("slash") || !libSignedIn || !slashEnabled || (tips.stats.slash || 0) > 0 || cardState !== "idle") return;
+  if (!composerHasFocus() || norm(getCurrentInputText()).length > 40) return;
+  if (!promptsLoaded) {
+    if (slashTipChecked) return;
+    slashTipChecked = true;
+    await fetchSavedPrompts();
+  }
+  if (!savedPrompts.length || !tipAllowed("slash")) return;
+  showTip("slash", {
+    title: "Your saved prompts, one // away",
+    body: "Type <b>//</b> in the chat box, then a few letters of a saved prompt, and press Enter to drop it in where you are typing.",
+    actions: [{ label: "Got it" }],
+    autoHideMs: 16000,
+  });
+}
+
+function setupTips() {
+  Promise.all([loadTips(), loadShortcut()]).then(() => {
+    // A beat after the page settles, so the tip lands next to the pill in its
+    // final place rather than chasing it.
+    clearTimeout(meetTimer);
+    meetTimer = setTimeout(maybeTipMeet, 2200);
+  });
+  window.addEventListener("resize", () => positionTip());
+  document.addEventListener("focusin", () => { if (!activeTip) maybeTipSlash(); }, true);
+}
+
 async function init() {
   const auth = await getAuth();
   // The extension may have been reloaded while getAuth awaited storage. Do
@@ -5007,6 +5292,7 @@ async function init() {
   setupPassiveTracking();
   watchNavigation();
   restoreDraft();
+  setupTips();
 }
 
 if (document.readyState === "loading") {
