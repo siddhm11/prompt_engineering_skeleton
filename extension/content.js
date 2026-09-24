@@ -116,7 +116,9 @@ let uiTheme = "dark";
 let isLoadingTab = false;
 // Passive prompt tracking: records every prompt the user submits on these
 // sites, whether or not they ever press Enhance, and keeps it server-side.
-let promptTrackingEnabled = true;
+// Off until the user turns it on, as the privacy policy, the first-run notice
+// and the popup all say. f8d0b96 had flipped the default to on.
+let promptTrackingEnabled = false;
 
 // Conversation context is different in kind: it is read from the page only
 // while fulfilling an enhancement the user explicitly asked for, is sent for
@@ -127,7 +129,7 @@ let dataConsent = false;
 
 // Load privacy preferences
 storageGet(["pm_tracking", "pm_context", "pm_data_consent_v1", "pm_mode"], (result) => {
-  promptTrackingEnabled = result.pm_tracking !== false;   // default: ON
+  promptTrackingEnabled = result.pm_tracking === true;   // default: off
   contextEnabled = result.pm_context !== false;          // default: on
   dataConsent = result.pm_data_consent_v1 === true;
   setDefaultStyle(result.pm_mode, false);
@@ -136,7 +138,7 @@ try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.pm_data_consent_v1) dataConsent = changes.pm_data_consent_v1.newValue === true;
-    if (changes.pm_tracking) promptTrackingEnabled = changes.pm_tracking.newValue !== false;
+    if (changes.pm_tracking) promptTrackingEnabled = changes.pm_tracking.newValue === true;
     if (changes.pm_context) contextEnabled = changes.pm_context.newValue !== false;
     // Picked in another tab: this one's next ⊕ should agree with it.
     if (changes.pm_mode) setDefaultStyle(changes.pm_mode.newValue, false);
