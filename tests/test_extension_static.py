@@ -1375,3 +1375,60 @@ def test_the_card_has_no_layout_button_and_dragging_does_not_need_one():
 def test_the_library_tabs_are_saved_and_history():
     head = _function_bodies(CONTENT_JS, r"libHeadHtml")["libHeadHtml"]
     assert ">History</button>" in head and ">Recent</button>" not in head
+
+
+# ── First run: the setup page, the setup modal and the tips ──────────────
+
+POPUP_JS = (ROOT / "extension" / "popup.js").read_text(encoding="utf-8")
+BACKGROUND_JS = (ROOT / "extension" / "background.js").read_text(encoding="utf-8")
+
+
+def test_the_setup_page_has_three_screens_chosen_by_state():
+    for screen in ("screen-welcome", "screen-setup", "screen-ready"):
+        assert f'id="{screen}"' in POPUP_HTML
+    body = _function_bodies(POPUP_JS, r"screenFor")["screenFor"]
+    assert '"welcome"' in body and '"setup"' in body and '"ready"' in body
+
+
+def test_the_ready_screen_says_what_to_do_next():
+    """People finished setup and did not know the plus button existed."""
+    for site in ("https://chatgpt.com/", "https://claude.ai/new", "https://gemini.google.com/app",
+                 "https://www.perplexity.ai/", "https://grok.com/"):
+        assert f'href="{site}"' in POPUP_HTML
+    assert "You're ready. Try it now:" in POPUP_JS
+
+
+def test_the_setup_page_draws_nothing_from_the_network():
+    assert "fonts.googleapis.com" not in POPUP_HTML
+
+
+def test_the_setup_modal_does_not_render_its_templates_whitespace():
+    rule = STYLES_CSS[STYLES_CSS.index(".pm-modal-body {"):]
+    rule = rule[:rule.index("}")]
+    assert "pre-wrap" not in rule, "HTML modals rendered every newline and indent as blank space"
+    assert ".pm-modal-body.pm-modal-text" in STYLES_CSS and 'class="pm-modal-body pm-modal-text"' in CONTENT_JS
+
+
+def test_the_chat_page_opens_setup_at_the_right_step():
+    assert 'openSettings("key")' in CONTENT_JS and 'openSettings("signin")' in CONTENT_JS
+    assert "popup.html?onboarding=1#${msg.section}" in BACKGROUND_JS
+
+
+def test_tips_never_promise_a_shortcut_chrome_did_not_assign():
+    assert 'case "PM_GET_SHORTCUT"' in BACKGROUND_JS
+    body = _function_bodies(CONTENT_JS, r"orShortcut")["orShortcut"]
+    assert 'assignedShortcut ? ' in body and ': ""' in body
+
+
+def test_tips_are_one_at_a_time_and_stay_out_of_the_way():
+    allowed = _function_bodies(CONTENT_JS, r"tipAllowed")["tipAllowed"]
+    for guard in ("!tips.off", "!tips.seen[id]", "TIP_MAX_SHOWS", "!cardExpanded", "!panelOpen", "!overlayHasInput()"):
+        assert guard in allowed, guard
+    show = _function_bodies(CONTENT_JS, r"showTip")["showTip"]
+    assert "hideTip()" in show and ".focus(" not in show, "a tip must never take focus"
+
+
+def test_tips_hear_typing_in_a_textarea_composer():
+    """A <textarea> changes its value, not its DOM: the MutationObserver is deaf to it."""
+    listeners = _function_bodies(CONTENT_JS, r"setupLibraryListeners")["setupLibraryListeners"]
+    assert "tipsOnComposerChanged()" in listeners
