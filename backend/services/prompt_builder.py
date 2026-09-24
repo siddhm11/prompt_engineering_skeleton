@@ -364,11 +364,22 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str, fetch_saved_pr
     user_parts.append(f'### USER\'S PROMPT\n"{request.prompt}"')
 
     source_lang = getattr(request, 'source_language', None)
-    if not source_lang:
+    detected = not source_lang
+    if detected:
         source_lang = _detect_text_language(request.prompt)
     if source_lang == 'ur':
         source_lang = 'hi'
     lang_name = LANGUAGE_NAMES.get(source_lang, source_lang)
+    # The detector only recognises Hindi and Hinglish; everything else comes
+    # back "en", so naming English here told the model to translate Spanish or
+    # French prompts into English. Name a language only on positive evidence
+    # (a script, Hinglish words, or Whisper's own language); otherwise ask for
+    # the prompt's own language, as the direct path already does.
+    if detected and source_lang == "en":
+        lang_name = "the same language as the USER'S PROMPT"
+        same_language = "Do NOT translate it or switch languages."
+    else:
+        same_language = f"The input text is in {lang_name} — do NOT switch languages."
 
     task_instruction = (
         "### TASK\n"
@@ -378,7 +389,7 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str, fetch_saved_pr
         "Use conversation context to resolve ambiguity. "
         "CRITICALLY: If the provided contexts (Selected or Related) are completely irrelevant to the User's Prompt, IGNORE THEM COMPLETELY. Do not try to blend unrelated topics.\n\n"
         f"⚠️ LANGUAGE REQUIREMENT: Your output MUST be in **{lang_name}**. "
-        f"The input text is in {lang_name} — do NOT switch languages. "
+        f"{same_language} "
         "Ignore the language of past patterns, saved prompts, or conversation history — "
         f"output ONLY in **{lang_name}**."
         + (

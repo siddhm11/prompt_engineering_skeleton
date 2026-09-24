@@ -130,6 +130,12 @@ def messages_for_case(case: dict, constants: dict) -> list[dict]:
 
     source_language = case.get("language", "en")
     language_name = constants["LANGUAGE_NAMES"].get(source_language, source_language)
+    same_language = f"The input text is in {language_name} — do NOT switch languages."
+    # Production names a language only on positive evidence; text its detector
+    # reads as plain Latin-script "en" is asked for in its own language.
+    if source_language == "en":
+        language_name = "the same language as the USER'S PROMPT"
+        same_language = "Do NOT translate it or switch languages."
     task = (
         "### TASK\n"
         "REWRITE the user's raw text above into a better PROMPT — a question or request they will paste into an AI chat. "
@@ -138,7 +144,7 @@ def messages_for_case(case: dict, constants: dict) -> list[dict]:
         "Use conversation context to resolve ambiguity. "
         "CRITICALLY: If any provided context is completely irrelevant to the User's Prompt, IGNORE IT COMPLETELY. Do not try to blend unrelated topics.\n\n"
         f"⚠️ LANGUAGE REQUIREMENT: Your output MUST be in **{language_name}**. "
-        f"The input text is in {language_name} — do NOT switch languages. "
+        f"{same_language} "
         "Ignore the language of past patterns, saved prompts, or conversation history — "
         f"output ONLY in **{language_name}**."
     )
