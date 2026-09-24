@@ -2909,10 +2909,14 @@ function setupCardInteractions(card) {
     positionCard();
   };
   card.querySelector("#pm-card-reset")?.addEventListener("click", resetCardLayout);
-  let suppressGripClick = false;
+  // A pointer press on the grip is captured by the card (so a resize cannot
+  // slip off the small grip), which means the click it ends with lands on the
+  // card, not here: a mouse click on the grip never reached this handler and
+  // opened nothing. A press that ends without moving is therefore handled in
+  // end() below, and this handler only answers keyboard clicks (detail 0:
+  // Enter or Space on the focused grip).
   grip.addEventListener("click", (e) => {
-    if (suppressGripClick && e.detail !== 0) { suppressGripClick = false; return; }
-    suppressGripClick = false;
+    if (e.detail !== 0) return;
     toggleLayout();
   });
   grip.addEventListener("keydown", (e) => {
@@ -2924,7 +2928,6 @@ function setupCardInteractions(card) {
   const begin = (event, kind) => {
     if (event.button !== 0 || (kind === "move" && event.target.closest("button"))) return;
     card._pmEndGesture?.();
-    suppressGripClick = false;
     const r = card.getBoundingClientRect();
     const start = { x: event.clientX, y: event.clientY };
     let moved = false;
@@ -2959,8 +2962,9 @@ function setupCardInteractions(card) {
       card.removeEventListener("lostpointercapture", end);
       try { card.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       card.classList.remove("pm-card-moving", "pm-card-resizing");
+      // A press on the grip that did not move is a click: open the controls.
+      if (!moved && kind === "resize" && next?.type === "pointerup") toggleLayout();
       if (moved) {
-        suppressGripClick = kind === "resize";
         const box = card.getBoundingClientRect();
         cardLayout = { detached: true, x: box.left, y: box.top, width: box.width, height: box.height };
         saveCardLayout();
