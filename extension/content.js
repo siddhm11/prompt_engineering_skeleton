@@ -1273,7 +1273,9 @@ const LIB_ICON = {
   shelf: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="4" rx="1.2"/><path d="M3.5 9.5h9M4.5 12.5h7"/></svg>',
 };
 
-let libView = "saved";        // "saved" | "recent"
+// "recent" is the History tab: every rewrite, as the popup and the consent
+// notice call it. "Recent" read as "recently saved", the same thing as Saved.
+let libView = "saved";        // "saved" | "recent" (shown as History)
 let libPage = "list";         // "list" | "privacy" | "feedback" | "signin"
 let libSel = 0;               // the highlighted row
 let libMenu = false;          // the ⋯ menu is open
@@ -1513,14 +1515,14 @@ function libHeadHtml() {
   const count = libView === "saved" ? savedPrompts.length : enhanceHistory.length;
   const placeholder = libView === "saved"
     ? (count ? `Search ${count} saved prompt${count === 1 ? "" : "s"}` : "Search saved prompts")
-    : "Search recent rewrites";
+    : "Search your rewrite history";
   return `<div class="pm-lib-head">` +
     `<label class="pm-lib-search">${LIB_ICON.search}` +
     `<input id="pm-lib-q" type="text" autocomplete="off" spellcheck="false" placeholder="${placeholder}" value="${escHtml(searchQuery)}"` +
     ` aria-label="Search the library" role="combobox" aria-expanded="true" aria-controls="pm-lib-list" aria-autocomplete="list"></label>` +
     `<div class="pm-lib-views" role="group" aria-label="Show">` +
-    `<button type="button" id="pm-lib-view-saved" data-view="saved" aria-pressed="${libView === "saved"}">Saved</button>` +
-    `<button type="button" id="pm-lib-view-recent" data-view="recent" aria-pressed="${libView === "recent"}">Recent</button></div>` +
+    `<button type="button" id="pm-lib-view-saved" data-view="saved" aria-pressed="${libView === "saved"}" title="Prompts you chose to keep">Saved</button>` +
+    `<button type="button" id="pm-lib-view-recent" data-view="recent" aria-pressed="${libView === "recent"}" title="Every rewrite you have made">History</button></div>` +
     more + `</div>`;
 }
 
@@ -1528,7 +1530,7 @@ function libBodyHtml() {
   if (libPage === "signin") {
     return `<div class="pm-lib-page">` +
       `<p class="pm-lib-lead">Your library lives in your account.</p>` +
-      `<p class="pm-lib-note">Saved prompts, your recent rewrites and context you attach are kept there, so they follow you across sites. ⊕ still rewrites without one.</p>` +
+      `<p class="pm-lib-note">Saved prompts, your rewrite history and context you attach are kept there, so they follow you across sites. ⊕ still rewrites without one.</p>` +
       `<button type="button" class="pm-lib-primary" id="pm-lib-signin" data-act="signin">Sign in</button></div>`;
   }
   if (libPage === "privacy") {
@@ -1551,7 +1553,7 @@ function libBodyHtml() {
       `<span class="pm-lib-status" id="pm-feedback-status" role="status"></span></div>` +
       `<div class="pm-lib-recent-feedback" id="pm-feedback-recent"></div></div>`;
   }
-  return `<div class="pm-lib-list" id="pm-lib-list" role="listbox" aria-label="${libView === "saved" ? "Saved prompts" : "Recent rewrites"}">${libRowsHtml()}</div>`;
+  return `<div class="pm-lib-list" id="pm-lib-list" role="listbox" aria-label="${libView === "saved" ? "Saved prompts" : "Rewrite history"}">${libRowsHtml()}</div>`;
 }
 
 function libRowsHtml() {
@@ -1563,7 +1565,7 @@ function libRowsHtml() {
   if (!list.length) {
     const q = searchQuery.trim();
     if (q) return `<div class="pm-lib-empty"><b>Nothing matches “${escHtml(q)}”</b>Search looks at titles, text and tags. Start with # to match a tag.</div>`;
-    if (libView === "recent") return `<div class="pm-lib-empty"><b>No rewrites yet</b>Press ⊕ on anything you type and it shows up here.</div>`;
+    if (libView === "recent") return `<div class="pm-lib-empty"><b>No history yet</b>Every rewrite you make with ⊕ shows up here. Save the ones worth keeping.</div>`;
     return `<div class="pm-lib-empty"><b>Your library is empty</b>Type a prompt in the chat box and it appears here, ready to save. ${CMD_KEY}S saves a rewrite from its card.</div>`;
   }
   const verb = libVerb();
