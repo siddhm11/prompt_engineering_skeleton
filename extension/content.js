@@ -2453,10 +2453,11 @@ async function fetchMyFeedback() {
 // ══════════════════════════════════════════════════════════════
 
 /** Open the extension's own settings UI. */
-function openSettings() {
+/** Open the settings page; `section` ("key" or "signin") opens it at that step. */
+function openSettings(section = "") {
   if (orphaned || !extensionAlive()) { onOrphaned(); return; }
   try {
-    chrome.runtime.sendMessage({ type: "PM_OPEN_OPTIONS" }, () => {
+    chrome.runtime.sendMessage({ type: "PM_OPEN_OPTIONS", section }, () => {
       if (!extensionAlive()) { onOrphaned(); return; }
       if (chrome.runtime.lastError) {
         showToast("Click the Prompt Memory icon in your toolbar to open settings.", "info");
@@ -3847,26 +3848,20 @@ function showSetupRequiredModal() {
       <button class="pm-header-close pm-modal-close-btn">×</button>
     </div>
     <div class="pm-modal-body">
-      <p class="pm-setup-intro">Prompt Memory needs an AI model to rewrite your prompts. Pick either option — both are free.</p>
+      <p class="pm-setup-intro">One step before your first rewrite: choose what does the rewriting. Both are free, and your draft stays as it is.</p>
 
       <div class="pm-setup-option pm-setup-option-primary">
-        <div class="pm-setup-badge">Recommended · no Prompt Memory sign-in</div>
-        <div class="pm-setup-title">Use your own free Groq key</div>
-        <div class="pm-setup-desc">
-          Takes about a minute. Your prompts go straight from your browser to
-          your chosen provider and never touch our server. Your usage allowance
-          depends on that provider, model, and account.
-        </div>
-        <button class="pm-btn pm-btn-primary" id="pm-setup-byok">Add my key</button>
+        <div class="pm-setup-badge">Quickest</div>
+        <div class="pm-setup-title">Sign in with Google</div>
+        <div class="pm-setup-desc">15 free rewrites a day, and your saved prompts and History on every computer.</div>
+        <button class="pm-btn pm-btn-primary" id="pm-setup-signin">Continue with Google</button>
       </div>
 
       <div class="pm-setup-option">
-        <div class="pm-setup-title">Or sign in with Google</div>
-        <div class="pm-setup-desc">
-          Uses our shared key — capped at 15 enhancements a day — and unlocks
-          saved prompts, history, and context from your past prompts.
-        </div>
-        <button class="pm-btn pm-btn-secondary" id="pm-setup-signin">Sign in</button>
+        <div class="pm-setup-badge">Most private</div>
+        <div class="pm-setup-title">Use your own free key</div>
+        <div class="pm-setup-desc">No account with us: your drafts go straight to the AI provider. Getting a free Groq key takes about a minute.</div>
+        <button class="pm-btn pm-btn-secondary" id="pm-setup-byok">Add a free key</button>
       </div>
     </div>
   `;
@@ -3881,11 +3876,11 @@ function showSetupRequiredModal() {
   // to set the product up.
   modal.querySelector("#pm-setup-byok")?.addEventListener("click", () => {
     closeModal();
-    openSettings();
+    openSettings("key");
   });
   modal.querySelector("#pm-setup-signin")?.addEventListener("click", () => {
     closeModal();
-    openSettings();
+    openSettings("signin");
   });
 
   // Without this the modal is built, inserted, wired up — and never shown.
@@ -4165,7 +4160,7 @@ async function ensureDataConsent() {
     modal.innerHTML = `
       <div class="pm-modal-header"><span class="pm-modal-title">How Prompt Memory handles your data</span></div>
       <div class="pm-modal-body pm-consent-body">
-        <p><strong>Only when you ask:</strong> Enhance sends your draft to an AI provider. When signed in, our server also receives it, saves the draft and rewrite in History, and includes up to six recent chat messages for context by default. You can switch that context off in Settings.</p>
+        <p><strong>Only when you ask:</strong> Enhance sends your draft to an AI provider. When signed in, our server also receives it, saves the draft and rewrite in History, and includes up to six recent chat messages for context by default. You can switch that context off in the Library: ⋯ → Privacy settings.</p>
         <p><strong>Your own key:</strong> Without sign-in, the draft goes directly from your browser to the provider. If you also sign in, the key is forwarded through our server for each enhancement request so memory features can work.</p>
         <p><strong>Other choices:</strong> Sign-in shares your Google email with us. Voice sends audio to our server and Groq when you record. Prompt Tracking logs submitted prompts only if you turn it on.</p>
         <a href="https://prompt-engineering-skeleton-seven.vercel.app/privacy" target="_blank" rel="noreferrer">Read the full privacy policy</a>
