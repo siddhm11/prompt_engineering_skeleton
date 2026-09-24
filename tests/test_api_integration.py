@@ -184,6 +184,40 @@ def test_quota_is_enforced_over_real_requests(client, auth, monkeypatch):
     assert body["byok_available"] is True
 
 
+def test_switching_tracking_off_does_not_lift_the_daily_limit(client, auth, monkeypatch):
+    """
+    The enhancement log was only written when tracking_enabled was true, and
+    the daily limit counts that log. Anyone who switched Prompt tracking off
+    got unlimited rewrites on the shared key, and an empty History.
+    """
+    monkeypatch.setitem(settings.TIER_LIMITS, "free", 3)
+    _stub_llm(monkeypatch)
+
+    replies = [
+        client.post("/enhance", json={"prompt": f"prompt {i}", "tracking_enabled": False}, headers=auth)
+        for i in range(5)
+    ]
+    assert [r.status_code for r in replies] == [200, 200, 200, 429, 429]
+    assert all(r.json()["log_id"] for r in replies[:3]), "each rewrite still has a log to accept or rate"
+    history = client.get("/enhance/history", headers=auth).json()["history"]
+    assert len(history) == 3
+
+
+def test_streaming_with_tracking_off_still_logs_the_rewrite(client, auth, monkeypatch):
+    import json as _json
+    monkeypatch.setattr(
+        prompts.providers, "chat_stream",
+        lambda **kw: iter([{"token": "Write a rollout plan."},
+                           {"meta": {"model": "m", "provider": "p", "byok": False}}]),
+    )
+    body = client.post("/enhance/stream", json={"prompt": "rollout plan", "tracking_enabled": False},
+                       headers=auth).text
+    done = next(e for e in (_json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: ")) if e.get("done"))
+    assert done["log_id"]
+    assert done["usage_today"]["used"] == 1
+    assert len(in_memory_prompt_logs) == 1
+
+
 def test_quota_does_not_go_infinite_when_the_store_fails(client, auth, monkeypatch):
     """
     The critical regression, over HTTP. A read failure used to report "0 used"
