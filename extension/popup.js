@@ -52,6 +52,7 @@ function render() {
     $("head-state-text").textContent = screen === "ready" ? "Ready" : "Setup needed";
 
     if (screen === "ready") renderReady();
+    renderPinHint(screen);
     // Deep link from the chat page ("Add my key"): open the key form once.
     if (location.hash === "#key" && !deepLinked && screen !== "welcome") {
         deepLinked = true;
@@ -66,6 +67,14 @@ function notice(text) {
     el.hidden = !text;
     clearTimeout(notice.timer);
     notice.timer = setTimeout(() => { el.hidden = true; }, 6000);
+}
+
+// Only when the icon really is hidden, and not over the welcome screen,
+// which has one job. getUserSettings() is Chrome 91+; older builds skip it.
+function renderPinHint(screen) {
+    const el = $("pin-hint");
+    if (screen === "welcome" || !chrome.action?.getUserSettings) { el.hidden = true; return; }
+    chrome.action.getUserSettings().then((s) => { el.hidden = Boolean(s?.isOnToolbar); }, () => { el.hidden = true; });
 }
 
 function renderReady() {

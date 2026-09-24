@@ -231,6 +231,11 @@
 
         .notice { margin: 12px 18px 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent); font-size: 12.5px; }
         body.pm-standalone .notice { max-width: 572px; margin: 16px auto 0; }
+        .pin { display: flex; gap: 10px; align-items: flex-start; margin: 12px 18px 0; padding: 10px 12px; border-radius: 10px;
+               border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); font-size: 12.5px; }
+        .pin svg { flex: none; margin-top: 2px; color: var(--accent); }
+        .pin b { color: var(--text); }
+        body.pm-standalone .pin { max-width: 572px; margin: 16px auto 0; }
         html { scrollbar-width: thin; scrollbar-color: #3a3b46 transparent; }
         footer { display: flex; gap: 14px; justify-content: center; padding: 4px 18px 18px; font-size: 12px; }
 
@@ -261,6 +266,12 @@
     </header>
 
     <p class="notice" id="notice" role="status" hidden></p>
+    <!-- Chrome hides a new extension under the puzzle-piece menu (Windows and
+         Mac alike), so people finish setup and cannot find this page again. -->
+    <div class="pin" id="pin-hint" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+        <span><b>Pin Prompt Memory</b> so you can find this page again: click the puzzle-piece icon at the top right of Chrome, then the pin beside Prompt Memory.</span>
+    </div>
 
     <!-- ═══ 1. WELCOME: what it does, what is sent, one consent ═══ -->
     <main id="screen-welcome" hidden>
