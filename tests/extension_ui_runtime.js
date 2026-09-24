@@ -93,9 +93,9 @@ function placePill() {}
 function saveCardLayout() { saves++; }
 function resetCardLayout() { cardLayout=null; resets++; }
 document.createElement=() => new Element();
-const gestureCard = new Element(), head = new Element(), grip = new Element(), toggle = new Element(), resetButton = new Element();
+const gestureCard = new Element(), head = new Element(), grip = new Element(), resetButton = new Element();
 gestureCard.rect={left:100,top:100,width:400,height:260};
-gestureCard.querySelector = selector => ({'.pm-card-head':head,'.pm-card-resize':grip,'#pm-card-layout-toggle':toggle,'#pm-card-reset':resetButton})[selector];
+gestureCard.querySelector = selector => ({'.pm-card-head':head,'.pm-card-resize':grip,'#pm-card-reset':resetButton})[selector];
 setupCardInteractions(gestureCard);
 const event = (x,y) => ({button:0,pointerId:1,clientX:x,clientY:y,target:{closest:()=>null}});
 head.fire('pointerdown',event(100,100));
@@ -131,7 +131,8 @@ grip.fire('pointerdown',event(730,530));window.fire('pointermove',event(780,570)
 assert(cardLayout.width===650 && cardLayout.height===450,'Resize changes dimensions');
 gestureCard._pmEndGesture();
 assert(!gestureCard.classes.size && globalListeners.pointermove.size===0,'Rerender cleanup removes active gesture');
-toggle.fire('click');assert(head.afterElement.hidden===false && toggle.attrs['aria-expanded']==='true','Layout reveals controls');
+// No Layout button: the grip opens the same controls (a keyboard click has detail 0).
+grip.fire('click',{detail:0});assert(head.afterElement.hidden===false && grip.attrs['aria-expanded']==='true','The grip reveals the move and size controls');
 const leftButton=head.afterElement.children.find(x=>x.textContent==='Left');leftButton.fire('click');
 assert(cardLayout.x===106,'Click-only movement');
 const widerButton=head.afterElement.children.find(x=>x.textContent==='Wider');widerButton.fire('click');
