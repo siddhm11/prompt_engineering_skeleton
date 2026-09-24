@@ -4164,7 +4164,7 @@ async function ensureDataConsent() {
         <p><strong>Only when you ask:</strong> Enhance sends your draft to an AI provider. When signed in, our server also receives it, saves the draft and rewrite in History, and includes up to six recent chat messages for context by default. You can switch that context off in Settings.</p>
         <p><strong>Your own key:</strong> Without sign-in, the draft goes directly from your browser to the provider. If you also sign in, the key is forwarded through our server for each enhancement request so memory features can work.</p>
         <p><strong>Other choices:</strong> Sign-in shares your Google email with us. Voice sends audio to our server and Groq when you record. Prompt Tracking logs submitted prompts only if you turn it on.</p>
-        <a href="https://github.com/siddhm11/prompt_engineering_skeleton/blob/main/website/privacy.html" target="_blank" rel="noreferrer">Read the full privacy policy</a>
+        <a href="https://prompt-engineering-skeleton-seven.vercel.app/privacy" target="_blank" rel="noreferrer">Read the full privacy policy</a>
       </div>
       <div class="pm-modal-footer">
         <button class="pm-btn pm-btn-secondary" id="pm-consent-cancel">Not now</button>
