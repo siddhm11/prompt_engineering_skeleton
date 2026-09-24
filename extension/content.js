@@ -896,7 +896,7 @@ function renderPill() {
       // The moment this exists for: a fresh chat, an empty box, a draft that
       // followed the user here. The verb says what it will do.
       state = "ready";
-      verb = norm(getCurrentInputText()) ? "Replace" : "Insert";
+      verb = cardSubject ? "Update" : norm(getCurrentInputText()) ? "Replace" : "Insert";
     }
   } else if (pillApplied) {
     state = "applied";
@@ -918,6 +918,7 @@ function renderPill() {
     verbEl.textContent = verb;
     verbEl.title = {
       Insert: "Insert into the chat box",
+      Update: "Update the saved prompt with this rewrite",
       Replace: "Replace the chat box text with the rewrite",
       Redo: "Rewrite what is in the chat box now",
       Retry: "Try the rewrite again",
@@ -1186,6 +1187,7 @@ async function restoreDraft() {
   cardResult = versions[cardVersionIndex];
   lastEnhanceResult = cardResult;
   cardOriginal = cardResult.original || "";
+  cardSubject = draft.subject && draft.subject.id ? draft.subject : null;
   cardBasedOn = draft.basedOn || norm(cardOriginal);
   cardHasBaseline = true;
   cardState = "ready";
@@ -1609,7 +1611,8 @@ function libRowsHtml() {
       `<button type="button" class="pm-lib-icon" data-act="more" aria-label="More actions" aria-expanded="${libRowMenu === p.id}">${LIB_ICON.more}</button>` +
       `<button type="button" class="pm-lib-verb" data-act="insert">${verb}</button></div></div>`;
     if (libRowMenu === p.id) {
-      row += `<div class="pm-lib-rowmenu"><button type="button" data-act="edit" data-i="${i}">Edit</button><button type="button" class="pm-lib-danger" data-act="ask" data-i="${i}">Delete</button></div>`;
+      row += `<div class="pm-lib-rowmenu"><button type="button" data-act="improve" data-i="${i}" title="Rewrite this saved prompt, then update it or save a new one">Improve</button>` +
+        `<button type="button" data-act="edit" data-i="${i}">Edit</button><button type="button" class="pm-lib-danger" data-act="ask" data-i="${i}">Delete</button></div>`;
     }
     return row;
   }).join("");
@@ -1649,6 +1652,36 @@ function libMenuHtml() {
 }
 
 // ── What the sheet does ──
+
+/**
+ * Rewrite a saved prompt itself. Opens the same card as ⊕, with the saved
+ * prompt as the original; styles and versions work as usual, and the verb is
+ * "Update saved prompt". It never matches itself as related context.
+ */
+async function improveSavedPrompt(p) {
+  closeLibrary();
+  if (enhanceInFlight) { showToast("Already enhancing \u2014 hang on a moment.", "info"); return; }
+  if (cardState !== "idle") {
+    // Starting over would drop the pending draft without a word.
+    showToast("Use or discard the draft in the pill first.", "info");
+    revealCard();
+    return;
+  }
+  const route = await resolveEnhanceRoute();
+  if (!route || cardState !== "idle") return;
+  cardSubject = { id: p.id, title: promptTitle(p), content: p.content };
+  enhanceInFlight = true;
+  showStreamingDiffModal(p.content);
+  try {
+    if (route.route === "direct") await runDirectEnhance(p.content, route);
+    else await runBackendEnhance(p.content, { excludedIds: [p.id], excluded: [] });
+  } catch (err) {
+    console.error("Prompt Memory: improve failed", err);
+    failStreamingModal(err?.message || "Enhancement failed. Please try again.");
+  } finally {
+    enhanceInFlight = false;
+  }
+}
 
 async function libInsert(text, logId) {
   closeLibrary();
@@ -1694,6 +1727,9 @@ function libAct(act, i) {
       return;
     case "edit":
       if (it?.kind === "saved") { libRowMenu = null; showEditModal(it.p); }
+      return;
+    case "improve":
+      if (it?.kind === "saved") { libRowMenu = null; improveSavedPrompt(it.p); }
       return;
     case "ask":
       if (it?.kind === "saved") { libConfirm = it.p.id; libRowMenu = null; renderLibraryList(); document.getElementById("pm-lib-del")?.focus(); }
@@ -2444,7 +2480,9 @@ let enhanceInFlight = false;
  */
 function reopenDraftIfRelevant(reveal = false) {
   if (cardState === "idle") return false;
-  if (cardState === "ready") {
+  // An Improve draft is not about the chat box, so new text there does not
+  // replace it: ⊕ shows it until it is used or discarded.
+  if (cardState === "ready" && !cardSubject) {
     const now = norm(getCurrentInputText());
     if (now && now !== cardBasedOn) return false;
   }
@@ -2746,6 +2784,10 @@ let cardRerunFrom = null;
 let cardStreamingStyle = "";
 // Whether the list of saved prompts under the rewrite is open. Per draft.
 let cardUsedOpen = false;
+// Set when the draft improves a saved prompt rather than the chat box text:
+// { id, title, content }. Its verb is "Update saved prompt", and the chat box
+// has no say in it — it is neither the source nor the destination.
+let cardSubject = null;
 // Set by whichever stream runner is active; called by closeCard() while
 // streaming. Without it "cancel" only hid the card, and the rewrite popped
 // back up as a finished draft when the stream it was still running ended.
@@ -2790,7 +2832,7 @@ function resetCardLayout() {
  * that followed the user is meant to land.
  */
 function isStaleAgainstComposer() {
-  if (!cardBasedOn) return false;
+  if (!cardBasedOn || cardSubject) return false;
   const now = norm(getCurrentInputText());
   return now !== "" && now !== cardBasedOn;
 }
@@ -3176,6 +3218,7 @@ function closeCard() {
   cardRerunFrom = null;
   cardStreamingStyle = "";
   cardUsedOpen = false;
+  cardSubject = null;
   draftStore.clear();
   renderPill();
 }
@@ -3221,8 +3264,9 @@ function showStreamingDiffModal(originalText, style = currentMode) {
 
 /** The streaming card's markup, also used to re-open it from the pill. */
 function showStreamingCardAgain() {
+  const what = cardSubject ? `Improving \u201c${escHtml(clipText(cardSubject.title, 32))}\u201d` : "Rewriting";
   openCard(
-    cardHead(`Rewriting${STYLE_NAMES[cardStreamingStyle] ? " \u00b7 " + STYLE_NAMES[cardStreamingStyle] : ""}\u2026`, "live") +
+    cardHead(`${what}${STYLE_NAMES[cardStreamingStyle] ? " \u00b7 " + STYLE_NAMES[cardStreamingStyle] : ""}\u2026`, "live") +
     `<div class="pm-card-text" id="pm-stream-target"><span class="pm-card-cursor"></span></div>` +
     cardFoot([
       `<button class="pm-card-act" id="pm-card-cancel">${cardKey("esc")} cancel</button>`,
@@ -3344,6 +3388,7 @@ function showDiffModal(result) {
     createdAt: result.createdAt || Date.now(),
     source: window.location.hostname,
     expanded: !cardMinimized,
+    subject: cardSubject,
   });
   if (!result.createdAt) result.createdAt = Date.now();
 
@@ -3357,7 +3402,7 @@ function showDiffModal(result) {
   const body = `<div class="pm-card-comparison">` +
     `<div class="pm-card-reading"><div class="pm-card-pane-label">Selected: ${cardShowingOriginal ? "Original" : "Rewrite"}</div>` +
     `<div class="pm-card-text${cardShowingOriginal ? " pm-card-original" : ""}">${cardShowingOriginal ? original : enhanced}</div></div>` +
-    `<div class="pm-card-reference"><div class="pm-card-pane-label">${cardShowingOriginal ? "Rewrite" : "Original"}</div>` +
+    `<div class="pm-card-reference"><div class="pm-card-pane-label">${cardShowingOriginal ? "Rewrite" : cardSubject ? "Saved prompt" : "Original"}</div>` +
     `<div class="pm-card-reference-text">${cardShowingOriginal ? enhanced : original}</div></div></div>`;
 
   // Named rather than merely dimmed. "Why is this greyed out" is a worse
@@ -3370,7 +3415,9 @@ function showDiffModal(result) {
     ? cardHead(cardShowingOriginal
         ? "Prompt changed \u2014 this is the text the rewrite was built from"
         : "Prompt changed \u2014 this rewrite is for the earlier text", "stale")
-    : cardHead(cardShowingOriginal ? "Original" : `Rewrite${STYLE_NAMES[result.mode] ? " \u00b7 " + STYLE_NAMES[result.mode] : ""}`);
+    : cardHead(cardShowingOriginal
+        ? (cardSubject ? "Saved prompt, as it is" : "Original")
+        : `${cardSubject ? `Improved \u201c${escHtml(clipText(cardSubject.title, 32))}\u201d` : "Rewrite"}${STYLE_NAMES[result.mode] ? " \u00b7 " + STYLE_NAMES[result.mode] : ""}`);
 
   // Which saved prompts shaped this rewrite, each one named, with a way to
   // drop an auto-matched one and rewrite again without it. Only shown when a
@@ -3386,7 +3433,9 @@ function showDiffModal(result) {
   // ⌘S save while their key handlers below stayed live. A footer that stops
   // listing keys that still work is worse than one that never listed them, and
   // the reflow made the card visibly rebuild itself the moment you typed.
-  const acceptLabel = cardShowingOriginal ? "Use original" : norm(getCurrentInputText()) ? "Replace draft" : "Insert";
+  const acceptLabel = cardSubject
+    ? (cardShowingOriginal ? "Keep it as it is" : "Update saved prompt")
+    : cardShowingOriginal ? "Use original" : norm(getCurrentInputText()) ? "Replace draft" : "Insert";
   const accept = cardStale
     ? `<span class="pm-card-act pm-card-disabled" title="The prompt changed — redo first">${acceptLabel}</span>`
     : `<button class="pm-card-act pm-card-primary" id="pm-card-accept">${acceptLabel}</button>`;
@@ -3400,7 +3449,7 @@ function showDiffModal(result) {
     // up again — from this chat or the next one. Discard is its own action.
     `<button class="pm-card-act" id="pm-card-close">${cardKey("esc")} minimize</button>`,
     `<button class="pm-card-act" id="pm-card-toggle">${cardShowingOriginal ? "Show rewrite" : "Show original"}</button>`,
-    `<button class="pm-card-act" id="pm-card-save">${cardKey(CMD_KEY + "S")} save</button>`,
+    `<button class="pm-card-act" id="pm-card-save">${cardKey(CMD_KEY + "S")} ${cardSubject ? "save as new" : "save"}</button>`,
     `<button class="pm-card-act pm-card-discard" id="pm-card-discard">discard</button>`,
     `<span class="pm-card-spacer"></span>`,
     truncatedNote,
@@ -3593,7 +3642,10 @@ async function rerunDraft(style, excluded = []) {
   cardBasedOn = basedOn;
   try {
     if (route.route === "direct") await runDirectEnhance(original, route, style);
-    else await runBackendEnhance(original, { excludedIds: excluded.map((x) => x.id), excluded }, style);
+    else await runBackendEnhance(original, {
+      excludedIds: [...excluded.map((x) => x.id), ...(cardSubject ? [cardSubject.id] : [])],
+      excluded,
+    }, style);
   } catch (err) {
     console.error("Prompt Memory: rerun failed", err);
     failStreamingModal(err?.message || "Enhancement failed. Please try again.");
@@ -3641,6 +3693,7 @@ document.addEventListener("input", refreshCardStaleness, true);
 /** Write the rewrite into the composer. */
 async function acceptCard() {
   if (cardState !== "ready" || !cardResult) return;
+  if (cardSubject) { await acceptImprovement(); return; }
   if (cardStale || isStaleAgainstComposer()) {
     // The dangerous action. Accepting here would replace what the user just
     // typed with a rewrite of text that no longer exists — and it would report
@@ -3669,8 +3722,46 @@ async function acceptCard() {
   }
 }
 
+/**
+ * Write an Improve draft back over the saved prompt it came from. The old
+ * text is one Undo away, and the chat box is not touched.
+ */
+async function acceptImprovement() {
+  const subject = cardSubject;
+  const result = cardResult;
+  if (cardShowingOriginal) {
+    closeCard();
+    showToast("Kept your saved prompt as it was.", "info");
+    return;
+  }
+  const ok = await updateSavedPrompt(subject.id, { content: result.enhanced });
+  if (!ok) {
+    // The draft stays, so nothing is lost: the user can retry or save as new.
+    showToast("Could not update the saved prompt. Try again, or save it as new.", "error");
+    return;
+  }
+  closeCard();
+  await fetchSavedPrompts();
+  if (result.log_id) approveEnhancement(result.log_id);
+  showToast(`Updated \u201c${clipText(subject.title, 40)}\u201d`, "success", {
+    label: "Undo",
+    run: async () => {
+      const back = await updateSavedPrompt(subject.id, { content: subject.content });
+      await fetchSavedPrompts();
+      showToast(back ? "Restored the earlier version." : "Could not restore it.", back ? "info" : "error");
+    },
+  });
+}
+
 async function saveCard() {
   if (!cardResult) return;
+  if (cardSubject) {
+    const outcome = await createSavedPrompt(cardResult.enhanced, `${cardSubject.title} (improved)`, []);
+    if (outcome === "saved") fetchSavedPrompts();
+    showToast(outcome === "saved" ? "Saved as a new prompt; the original is unchanged" : outcome === "duplicate" ? "Already in your library" : "Could not save",
+      outcome === "saved" ? "success" : outcome === "duplicate" ? "info" : "error");
+    return;
+  }
   const outcome = await createSavedPrompt(cardResult.enhanced, null, []);
   if (outcome === "duplicate") {
     showToast("Already in your library", "info");
@@ -3925,7 +4016,7 @@ function dismissToast(toast) {
 // The rating question after an accepted rewrite lives in the pill: see
 // showApplied() / ratePill().
 
-function showToast(message, type = "info") {
+function showToast(message, type = "info", action = null) {
   document.getElementById("pm-toast")?.remove();
 
   const stack = getOrCreateToastStack();
@@ -3933,6 +4024,15 @@ function showToast(message, type = "info") {
   toast.id = "pm-toast";
   toast.className = `pm-toast pm-toast-${type}`;
   toast.textContent = message;
+  // One optional action, such as Undo. It stays up longer, so it can be used.
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pm-toast-action";
+    b.textContent = action.label;
+    b.addEventListener("click", () => { dismissToast(toast); action.run(); }, { once: true });
+    toast.appendChild(b);
+  }
 
   // Before the feedback toast when both are up, so the plain status line reads
   // first and the thing with buttons sits nearest the card.
@@ -3943,7 +4043,7 @@ function showToast(message, type = "info") {
     positionToasts();
   });
 
-  setTimeout(() => dismissToast(toast), 3000);
+  setTimeout(() => dismissToast(toast), action ? 8000 : 3000);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4167,6 +4267,7 @@ function getCurrentInputText() {
 }
 
 const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+const clipText = (s, n) => { const t = norm(s); return t.length > n ? t.slice(0, n - 1) + "\u2026" : t; };
 
 /**
  * Write text into the page's composer. Returns true only if it actually stuck.

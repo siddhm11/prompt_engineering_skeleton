@@ -2328,3 +2328,11 @@
 .pm-card-used-drop:hover { border-color: var(--pm-danger, #e5484d); color: var(--pm-danger, #e5484d); }
 .pm-card-used-drop:focus-visible { outline: 2px solid var(--pm-accent); outline-offset: 2px; }
 .pm-card-used-left { font-size: 11px; color: var(--pm-text-muted); padding: 4px 8px 0; }
+
+/* One action inside a toast (Undo after updating a saved prompt). */
+.pm-toast-action {
+    margin-left: 12px; padding: 2px 10px; min-height: 24px; border-radius: 100px; cursor: pointer;
+    font: 600 12px var(--pm-font); color: var(--pm-accent); background: transparent; border: 1px solid currentColor;
+    pointer-events: auto;
+}
+.pm-toast-action:focus-visible { outline: 2px solid var(--pm-accent); outline-offset: 2px; }
