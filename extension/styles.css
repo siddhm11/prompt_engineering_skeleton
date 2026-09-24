@@ -1747,15 +1747,14 @@
 .pm-card { max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow-y: auto; }
 .pm-card-head, .pm-card-foot { flex-shrink: 0; }
 .pm-card-min, .pm-card-reset { width: 32px; height: 32px; }
-.pm-card-layout-toggle, .pm-card-layout button {
+.pm-card-layout button {
     font: 12px var(--pm-font); color: var(--pm-text); background: var(--pm-bg-hover);
     border: 1px solid var(--pm-border); border-radius: 6px; min-height: 32px;
     padding: 4px 8px; cursor: pointer;
 }
-.pm-card-layout-toggle { flex: none; }
 .pm-card-layout { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; flex: none; }
 .pm-card-layout[hidden] { display: none; }
-.pm-card-layout button:focus-visible, .pm-card-layout-toggle:focus-visible {
+.pm-card-layout button:focus-visible {
     outline: 2px solid var(--pm-accent); outline-offset: 2px;
 }
 .pm-card-resize { width: 28px; height: 28px; border: 0; background: transparent; padding: 0; }

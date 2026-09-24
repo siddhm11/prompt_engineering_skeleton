@@ -2766,7 +2766,7 @@ function resetCardLayout() {
   if (!card) return;
   card.classList.remove("pm-card-free");
   card.style.height = "";
-  if (document.activeElement?.id === "pm-card-reset") card.querySelector("#pm-card-layout-toggle")?.focus({ preventScroll: true });
+  if (document.activeElement?.id === "pm-card-reset") card.querySelector("#pm-card-resize")?.focus({ preventScroll: true });
   positionCard();
   placePill();
 }
@@ -2811,8 +2811,11 @@ function getOrCreateCard() {
 function setupCardInteractions(card) {
   const head = card.querySelector(".pm-card-head");
   const grip = card.querySelector(".pm-card-resize");
-  const toggle = card.querySelector("#pm-card-layout-toggle");
-  if (!head || !grip || !toggle) return;
+  // No separate "Layout" button in the title bar: the grip is the one way in.
+  // Dragging it resizes; clicking it (or Enter/Space) opens the move and size
+  // controls, the non-drag route; arrow keys on it resize. Before, a missing
+  // toggle made this return early and silently disabled dragging too.
+  if (!head || !grip) return;
   const controls = document.createElement("div");
   controls.id = "pm-card-layout";
   controls.className = "pm-card-layout";
@@ -2846,10 +2849,9 @@ function setupCardInteractions(card) {
   head.after(controls);
   const toggleLayout = () => {
     controls.hidden = !controls.hidden;
-    toggle.setAttribute("aria-expanded", String(!controls.hidden));
+    grip.setAttribute("aria-expanded", String(!controls.hidden));
     positionCard();
   };
-  toggle.addEventListener("click", toggleLayout);
   card.querySelector("#pm-card-reset")?.addEventListener("click", resetCardLayout);
   let suppressGripClick = false;
   grip.addEventListener("click", (e) => {
@@ -3082,7 +3084,7 @@ function openCard(innerHTML) {
   const focusedId = card.contains(document.activeElement) ? document.activeElement.id : null;
   card._pmEndGesture?.();
   card.innerHTML = innerHTML +
-    `<button type="button" class="pm-card-resize" id="pm-card-resize" aria-label="Card size and position" title="Drag to resize, or click for layout controls"></button>`;
+    `<button type="button" class="pm-card-resize" id="pm-card-resize" aria-label="Card size and position" aria-expanded="false" aria-controls="pm-card-layout" title="Drag to resize, or click to move and size with buttons"></button>`;
   cardExpanded = true;
   positionRail();   // the card takes the chat box's top edge; the rail steps aside
   setupCardInteractions(card);
@@ -3184,7 +3186,6 @@ function cardHead(title, kind = "") {
   return `<div class="pm-card-head${kind ? " pm-card-head-" + kind : ""}" title="Drag to move">` +
     `<span class="pm-card-head-dot" aria-hidden="true"></span>` +
     `<span class="pm-card-title">${title}</span>` +
-    `<button class="pm-card-layout-toggle" type="button" id="pm-card-layout-toggle" aria-expanded="false" aria-controls="pm-card-layout">Layout</button>` +
     `<button class="pm-card-reset" type="button" id="pm-card-reset" title="Return beside the prompt" aria-label="Return card beside the prompt">↙</button>` +
     `<button class="pm-card-min" type="button" id="pm-card-min" title="Minimize to the pill (esc)" aria-label="Minimize to the pill">${CARD_MIN_SVG}</button>` +
   `</div>`;
