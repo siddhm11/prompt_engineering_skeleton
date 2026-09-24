@@ -3,7 +3,7 @@
 
 Unlike run_prompt_eval.py, this bypasses the Prompt Memory API so synthetic
 cases do not consume product quota or enter Mongo/Qdrant/dashboard analytics.
-It extracts the literal production prompt constants from routers/prompts.py,
+It extracts the literal production prompt constants from services/prompt_builder.py,
 making prompt drift visible while avoiding imports of database/embedding code.
 """
 
@@ -31,7 +31,7 @@ except ImportError:
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-PROMPTS_PY = ROOT / "backend" / "routers" / "prompts.py"
+PROMPTS_PY = ROOT / "backend" / "services" / "prompt_builder.py"
 CONSTANTS = {
     "SYSTEM_PROMPT_BASE", "MODE_INSTRUCTIONS", "PLATFORM_HINTS",
     "LANGUAGE_NAMES", "OUTPUT_INSTRUCTION", "STEERING_TURN",

@@ -67,7 +67,7 @@ def check(cond, msg):
 
 
 def router_modes():
-    tree = ast.parse((ROOT / "backend/routers/prompts.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "backend/services/prompt_builder.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "MODE_INSTRUCTIONS" for t in node.targets):
             return {k: v.strip() for k, v in ast.literal_eval(node.value).items()}
