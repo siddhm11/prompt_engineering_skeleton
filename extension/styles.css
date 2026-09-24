@@ -2297,3 +2297,11 @@
     .pm-lib .pm-lib-skeleton i { animation: none; }
     .pm-lib .pm-lib-switch, .pm-lib .pm-lib-switch::before { transition: none; }
 }
+
+/* The shortcut asked for a card that is already open: point at it instead of
+   hiding it (see revealCard). */
+@keyframes pm-card-nudge {
+  40% { outline: 3px solid rgba(80, 200, 168, .6); outline-offset: 2px; }
+}
+.pm-card.pm-card-nudge { animation: pm-card-nudge .6s ease-out; }
+@media (prefers-reduced-motion: reduce) { .pm-card.pm-card-nudge { animation: none; } }

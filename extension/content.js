@@ -1210,7 +1210,7 @@ function setupKeyboardShortcut() {
   try {
     chrome.runtime.onMessage.addListener((msg) => {
       if (orphaned || msg?.type !== "PM_COMMAND") return;
-      if (msg.command === "enhance-prompt") handleEnhance();
+      if (msg.command === "enhance-prompt") handleEnhance({ reveal: true });
       if (msg.command === "voice-prompt") toggleVoice();
     });
   } catch (e) { onOrphaned(e); return; }
@@ -1230,7 +1230,7 @@ function setupKeyboardShortcut() {
     // whereas e.code names the physical key.
     if (e.code === "KeyE") {
       e.preventDefault();
-      handleEnhance();
+      handleEnhance({ reveal: true });
     } else if (e.code === "KeyV") {
       e.preventDefault();
       toggleVoice();
@@ -2436,14 +2436,35 @@ let enhanceInFlight = false;
  * on the pill from spending one of fifteen daily enhancements on the same
  * sentence twice.
  */
-function reopenDraftIfRelevant() {
+function reopenDraftIfRelevant(reveal = false) {
   if (cardState === "idle") return false;
-  if (cardState === "streaming") { toggleCard(); return true; }
-  if (cardState === "error") { toggleCard(); return true; }
-  const now = norm(getCurrentInputText());
-  if (now && now !== cardBasedOn) return false;
-  toggleCard();
+  if (cardState === "ready") {
+    const now = norm(getCurrentInputText());
+    if (now && now !== cardBasedOn) return false;
+  }
+  if (reveal) revealCard();
+  else toggleCard();
   return true;
+}
+
+/**
+ * Bring the draft's card up, and never put it away.
+ *
+ * The keyboard shortcut used to go through toggleCard(), so pressing it again
+ * on the same draft hid the card it had just shown: one press rewrote, the next
+ * made the rewrite vanish, and testers reported the shortcut as broken. The
+ * pill still folds the card on click (it is the card's handle), and ⌘⇧P is
+ * the explicit toggle; the shortcut only ever shows.
+ */
+function revealCard() {
+  if (!cardExpanded) { expandCard(); return; }
+  const card = document.getElementById("pm-card");
+  if (card) {
+    card.classList.remove("pm-card-nudge");
+    void card.offsetWidth;   // restart the animation
+    card.classList.add("pm-card-nudge");
+  }
+  if (cardState === "ready") showToast("Already rewritten. Change the text in the chat box to rewrite it again.", "info");
 }
 
 /**
@@ -2483,16 +2504,18 @@ async function resolveEnhanceRoute() {
   return route;
 }
 
-async function handleEnhance() {
+/** `reveal`: the keyboard shortcut, which shows a pending draft but never hides it. */
+async function handleEnhance({ reveal = false } = {}) {
   if (orphaned || !extensionAlive()) {
     onOrphaned();
     return;
   }
   if (enhanceInFlight) {
-    showToast("Already enhancing — hang on a moment.", "info");
+    if (reveal && cardState === "streaming") revealCard();
+    else showToast("Already enhancing — hang on a moment.", "info");
     return;
   }
-  if (reopenDraftIfRelevant()) return;
+  if (reopenDraftIfRelevant(reveal)) return;
 
   const inputText = getCurrentInputText();
   if (!inputText || inputText.trim().length < 3) {
