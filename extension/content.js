@@ -349,6 +349,10 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone, i
   if (selectedPromptIds && selectedPromptIds.length > 0) {
     body.selected_prompt_ids = selectedPromptIds;
   }
+  // Saved prompts the user dropped from the card ("Don't use"): not searched.
+  if (inputMetadata.excludedIds && inputMetadata.excludedIds.length) {
+    body.excluded_prompt_ids = inputMetadata.excludedIds;
+  }
   if (inputMetadata.inputMethod === "voice") {
     body.input_method = "voice";
     if (Number.isFinite(inputMetadata.inputDurationSeconds) && inputMetadata.inputDurationSeconds > 0) {
@@ -2635,6 +2639,10 @@ async function runBackendEnhance(inputText, inputMetadata = {}, style = currentM
       }
       updateUsageBar();
 
+      // context_details names each saved prompt that shaped the rewrite. It
+      // was dropped here, so the card could only ever say "3 saved prompts
+      // used" and never which ones, though the server has sent them since
+      // the streaming route learned to (7725aef).
       lastEnhanceResult = {
         original: inputText,
         enhanced: parts.join(""),
@@ -2643,6 +2651,8 @@ async function runBackendEnhance(inputText, inputMetadata = {}, style = currentM
         mode: metadata.mode || style,
         model: metadata.model,
         context_used: metadata.context_used,
+        context_details: metadata.context_details,
+        excluded: inputMetadata.excluded || [],
       };
       finalizeStreamingModal(lastEnhanceResult);
     },
@@ -2734,6 +2744,8 @@ let cardVersionIndex = 0;
 let cardRerunFrom = null;
 // The style the streaming card is waiting on, for its title.
 let cardStreamingStyle = "";
+// Whether the list of saved prompts under the rewrite is open. Per draft.
+let cardUsedOpen = false;
 // Set by whichever stream runner is active; called by closeCard() while
 // streaming. Without it "cancel" only hid the card, and the rewrite popped
 // back up as a finished draft when the stream it was still running ended.
@@ -3163,6 +3175,7 @@ function closeCard() {
   cardVersionIndex = 0;
   cardRerunFrom = null;
   cardStreamingStyle = "";
+  cardUsedOpen = false;
   draftStore.clear();
   renderPill();
 }
@@ -3359,26 +3372,10 @@ function showDiffModal(result) {
         : "Prompt changed \u2014 this rewrite is for the earlier text", "stale")
     : cardHead(cardShowingOriginal ? "Original" : `Rewrite${STYLE_NAMES[result.mode] ? " \u00b7 " + STYLE_NAMES[result.mode] : ""}`);
 
-  // Only shown when a saved prompt actually shaped the rewrite. The old footer
-  // printed four zeros on every result, which teaches people to stop reading it.
-  // Degrade by what the response actually carries. The two enhance endpoints
-  // returned different shapes — only the non-streaming one included
-  // context_details — so reading details alone meant the chip never appeared
-  // on the streaming path, which is the path the extension uses.
-  let chip = "";
-  const matched = result.context_details?.auto_matched_prompts?.[0];
-  const autoCount = result.context_used?.auto_matched || 0;
-  const selectedCount = result.context_used?.selected || 0;
-  if (!cardShowingOriginal) {
-    if (matched && (matched.title || matched.content)) {
-      const label = (matched.title || matched.content || "saved prompt").slice(0, 48);
-      chip = `<div class="pm-card-chip" title="This rewrite drew on a saved prompt">\u21B3 ${escHtml(label)}</div>`;
-    } else if (autoCount > 0) {
-      chip = `<div class="pm-card-chip">\u21B3 ${autoCount} saved prompt${autoCount > 1 ? "s" : ""} used</div>`;
-    } else if (selectedCount > 0) {
-      chip = `<div class="pm-card-chip">\u21B3 ${selectedCount} selected</div>`;
-    }
-  }
+  // Which saved prompts shaped this rewrite, each one named, with a way to
+  // drop an auto-matched one and rewrite again without it. Only shown when a
+  // saved prompt actually took part.
+  const chip = cardUsedHtml(result);
 
   const truncatedNote = result.truncated
     ? `<span class="pm-card-meta" style="color:var(--pm-danger)">cut short</span>`
@@ -3444,7 +3441,63 @@ function showDiffModal(result) {
     b.addEventListener("click", () => rerunInStyle(b.dataset.pmStyle)));
   document.getElementById("pm-card-ver-prev")?.addEventListener("click", () => stepVersion(-1));
   document.getElementById("pm-card-ver-next")?.addEventListener("click", () => stepVersion(1));
+  document.getElementById("pm-card-used-toggle")?.addEventListener("click", (e) => {
+    cardUsedOpen = !cardUsedOpen;
+    e.currentTarget.setAttribute("aria-expanded", String(cardUsedOpen));
+    const list = document.getElementById("pm-card-used-list");
+    if (list) list.hidden = !cardUsedOpen;
+    positionCard();
+  });
+  card.querySelectorAll("[data-pm-drop]").forEach((b) =>
+    b.addEventListener("click", () => rerunWithout(b.dataset.pmDrop, b.dataset.pmTitle || "")));
   renderPill();
+}
+
+/**
+ * The saved prompts that shaped a rewrite: the ones the user attached, and
+ * the ones the server matched on its own. A matched one can be dropped, which
+ * rewrites the same text again without it (a new version; the old one stays).
+ */
+function cardUsedHtml(result) {
+  if (cardShowingOriginal) return "";
+  const d = result.context_details || {};
+  const items = [
+    ...(d.selected_prompts || []).map((p) => ({ ...p, kind: "attached" })),
+    ...(d.auto_matched_prompts || []).map((p) => ({ ...p, kind: "matched" })),
+  ];
+  const left = result.excluded || [];
+  if (!items.length && !left.length) {
+    // A server that sends counts only.
+    const n = (result.context_used?.auto_matched || 0) + (result.context_used?.selected || 0);
+    return n ? `<div class="pm-card-chip">\u21B3 ${n} saved prompt${n > 1 ? "s" : ""} used</div>` : "";
+  }
+  const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
+  const clip = (t, n) => (t.length > n ? t.slice(0, n - 1) + "\u2026" : t);
+  const name = (p) => flat(p.title) || clip(flat(p.content), 40) || "Saved prompt";
+  const summary = items.length
+    ? "Used " + items.slice(0, 2).map((p) => escHtml(clip(name(p), 26))).join(" \u00b7 ") +
+      (items.length > 2 ? ` +${items.length - 2}` : "")
+    : "No saved prompts used";
+  const rows = items.map((p) => {
+    const why = p.kind === "attached" ? "you attached it" : Number(p.score) >= 0.5 ? "close match" : "loose match";
+    const preview = p.title && p.content ? " \u00b7 " + escHtml(clip(flat(p.content), 80)) : "";
+    const drop = p.kind === "matched" && p.id && !cardStale
+      ? `<button type="button" class="pm-card-used-drop" data-pm-drop="${escHtml(p.id)}" data-pm-title="${escHtml(name(p))}" ` +
+        `title="Rewrite again without this saved prompt">Don\u2019t use</button>`
+      : "";
+    return `<li class="pm-card-used-item pm-card-used-${p.kind}">` +
+      `<span class="pm-card-used-icon" aria-hidden="true">${p.kind === "attached" ? LIB_ICON.clip : "\u2248"}</span>` +
+      `<span class="pm-card-used-text"><span class="pm-card-used-name">${escHtml(clip(name(p), 60))}</span>` +
+      `<span class="pm-card-used-why">${why}${preview}</span></span>${drop}</li>`;
+  }).join("");
+  const leftOut = left.length
+    ? `<li class="pm-card-used-left">Left out: ${left.map((x) => escHtml(clip(flat(x.title) || "a saved prompt", 40))).join(", ")}</li>`
+    : "";
+  return `<div class="pm-card-used">` +
+    `<button type="button" class="pm-card-chip pm-card-used-toggle" id="pm-card-used-toggle" aria-expanded="${cardUsedOpen}" ` +
+    `aria-controls="pm-card-used-list" title="The saved prompts this rewrite drew on">\u21B3 ${summary}` +
+    `<span class="pm-card-used-caret" aria-hidden="true">\u25BE</span></button>` +
+    `<ul class="pm-card-used-list" id="pm-card-used-list"${cardUsedOpen ? "" : " hidden"}>${rows}${leftOut}</ul></div>`;
 }
 
 /**
@@ -3500,6 +3553,19 @@ async function rerunInStyle(style) {
   if (cardState !== "ready" || !cardResult || cardStale || !STYLES.includes(style)) return;
   const made = cardVersions.findIndex((v) => v.mode === style);
   if (made !== -1) { stepVersion(made - cardVersionIndex); return; }
+  // A saved prompt the user dropped stays dropped in the other styles.
+  await rerunDraft(style, cardResult.excluded || []);
+}
+
+/** Rewrite the same text again, in the same style, without one saved prompt. */
+async function rerunWithout(id, title) {
+  if (cardState !== "ready" || !cardResult || cardStale || cardResult.direct || !id) return;
+  const excluded = [...(cardResult.excluded || []).filter((x) => x.id !== id), { id, title }];
+  await rerunDraft(STYLES.includes(cardResult.mode) ? cardResult.mode : currentMode, excluded);
+}
+
+/** A new version of this draft; the versions already made are kept. */
+async function rerunDraft(style, excluded = []) {
   if (enhanceInFlight) {
     showToast("Already enhancing \u2014 hang on a moment.", "info");
     return;
@@ -3527,9 +3593,9 @@ async function rerunInStyle(style) {
   cardBasedOn = basedOn;
   try {
     if (route.route === "direct") await runDirectEnhance(original, route, style);
-    else await runBackendEnhance(original, {}, style);
+    else await runBackendEnhance(original, { excludedIds: excluded.map((x) => x.id), excluded }, style);
   } catch (err) {
-    console.error("Prompt Memory: style rerun failed", err);
+    console.error("Prompt Memory: rerun failed", err);
     failStreamingModal(err?.message || "Enhancement failed. Please try again.");
   } finally {
     enhanceInFlight = false;
