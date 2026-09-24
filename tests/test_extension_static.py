@@ -945,7 +945,17 @@ def test_the_pill_click_does_not_respend_quota_on_the_same_text():
     body = _function_bodies(CONTENT_JS, r"reopenDraftIfRelevant")["reopenDraftIfRelevant"]
     assert "now && now !== cardBasedOn" in body
     handle = _function_bodies(CONTENT_JS, r"handleEnhance")["handleEnhance"]
-    assert handle.index("reopenDraftIfRelevant()") < handle.index("getCurrentInputText()")
+    assert handle.index("reopenDraftIfRelevant(") < handle.index("getCurrentInputText()")
+
+
+def test_the_shortcut_shows_a_draft_but_never_hides_it():
+    """Pressed twice on one draft, the shortcut used to hide the card it had
+    just shown. Both of its paths ask handleEnhance to reveal."""
+    assert CONTENT_JS.count("handleEnhance({ reveal: true })") == 2
+    body = _function_bodies(CONTENT_JS, r"reopenDraftIfRelevant")["reopenDraftIfRelevant"]
+    assert "if (reveal) revealCard();" in body
+    reveal = _function_bodies(CONTENT_JS, r"revealCard")["revealCard"]
+    assert "hideCard" not in reveal and "toggleCard" not in reveal
 
 
 def test_navigation_is_watched_and_rejudges_the_draft():
