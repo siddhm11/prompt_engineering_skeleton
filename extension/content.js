@@ -5374,62 +5374,6 @@ function showToast(message, type = "info", action = null) {
 // EDIT MODAL
 // ══════════════════════════════════════════════════════════════
 
-function showEditModal(prompt) {
-  const overlay = getOrCreateModalOverlay();
-  const modal = overlay.querySelector(".pm-modal");
-
-  modal.innerHTML = `
-    <div class="pm-modal-header">
-      <span class="pm-modal-title">Edit Prompt</span>
-      <button class="pm-header-close pm-modal-close-btn">×</button>
-    </div>
-    <div class="pm-modal-body">
-      <label class="pm-label">Content</label>
-      <textarea class="pm-edit-textarea" id="pm-edit-content">${escHtml(prompt.content)}</textarea>
-      <label class="pm-label">Title <span style="color:var(--pm-text-muted)">(optional)</span></label>
-      <input class="pm-edit-input" id="pm-edit-title" value="${escHtml(prompt.title || "")}" placeholder="Optional title" />
-      <label class="pm-label">Tags <span style="color:var(--pm-text-muted)">(optional, comma-separated)</span></label>
-      <input class="pm-edit-input" id="pm-edit-tags" value="${escHtml((prompt.tags || []).join(", "))}" placeholder="e.g. coding, review" />
-    </div>
-    <div class="pm-modal-footer">
-      <button class="pm-btn pm-btn-secondary pm-modal-close-btn">Cancel</button>
-      <button class="pm-btn pm-btn-primary" id="pm-edit-save">Save Changes</button>
-    </div>
-  `;
-
-  overlay.querySelectorAll(".pm-modal-close-btn").forEach((b) =>
-    b.addEventListener("click", closeModal)
-  );
-
-  document.getElementById("pm-edit-save").addEventListener("click", async () => {
-    const content = document.getElementById("pm-edit-content").value.trim();
-    const title = document.getElementById("pm-edit-title").value.trim();
-    const tagsRaw = document.getElementById("pm-edit-tags").value.trim();
-    const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()).filter((t) => t) : [];
-    if (!content) return;
-
-    const fields = {};
-    if (content !== prompt.content) fields.content = content;
-    if (title !== (prompt.title || "")) fields.title = title || null;
-    if (JSON.stringify(tags) !== JSON.stringify(prompt.tags || [])) fields.tags = tags;
-
-    if (Object.keys(fields).length === 0) { closeModal(); return; }
-
-    const btn = document.getElementById("pm-edit-save");
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-
-    const ok = await updateSavedPrompt(prompt.id, fields);
-    if (ok) {
-      await fetchSavedPrompts();
-      renderLibrary();
-    }
-    closeModal();
-  });
-
-  overlay.classList.add("pm-visible");
-}
-
 // ══════════════════════════════════════════════════════════════
 // GENERIC MODAL
 // ══════════════════════════════════════════════════════════════
