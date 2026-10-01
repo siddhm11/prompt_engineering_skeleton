@@ -134,7 +134,7 @@ const SHORTCUTS = () => [
     where: "In the library",
     rows: [
       { keys: ["↑", "↓"], what: "Move through the list" },
-      { keys: ["→"], what: "Read the whole prompt", note: "← puts it away" },
+      { keys: ["→"], what: "Go to the prompt's pane", note: "← comes back" },
       { keys: ["↵"], what: "Add it to context, or take it out", note: "a click does the same" },
       { keys: [`${CMD_KEY}↵`], what: "Insert it into the chat box" },
       { keys: ["Esc"], what: "Go back, then close" },
@@ -1468,6 +1468,10 @@ function isTypingTarget(el) {
 // the chat box) attaches, esc closes.
 
 const LIB_ICON = {
+  chevron: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>',
+  edit: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.5 2.8 13.2 5.5 6 12.7l-3.3.6.6-3.3z"/></svg>',
+  trash: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>',
+  spark: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v3M8 10.5v3M2.5 8h3M10.5 8h3M4.2 4.2l1.8 1.8M10 10l1.8 1.8M11.8 4.2 10 6M6 10l-1.8 1.8"/></svg>',
   search: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>',
   more: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>',
   clip: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.5 5.5 6 10a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4L4 8a4.2 4.2 0 0 0 6 6l3.5-3.5"/></svg>',
@@ -1486,10 +1490,23 @@ let libView = "saved";        // "saved" | "recent" (shown as History)
 let libPage = "list";         // "list" | "privacy" | "feedback" | "signin"
 let libSel = 0;               // the highlighted row
 let libMenu = false;          // the ⋯ menu is open
-let libRowMenu = null;        // a row whose ⋯ (Edit, Delete, …) is open
 let libConfirm = null;        // a saved prompt awaiting "Delete?"
 let libSignedIn = false;      // kept current from storage; // needs it synchronously
 let libHistoryLoaded = false;
+let libTag = "";              // the tag filter row: "" for every tag
+let libEditId = null;         // libPage "edit": the saved prompt in the editor
+let libDetailOpen = false;    // a narrow tray shows one pane: the list, or this prompt
+let libHoverTimer = null;
+const LIB_HOVER_MS = 140;
+// Pins and when each prompt was last used, kept on this device: the server
+// knows neither, and both only decide the order the list is shown in.
+const LIB_LOCAL_KEY = "pm_lib_local";
+let libPins = new Set();
+let libUses = {};
+// The order is taken when the tray opens and kept while it stays open: using
+// a prompt makes it recent, and re-sorting at once moved the row out from
+// under the pointer that had just clicked it.
+let libOrderUses = {};
 let slashEnabled = true;      // "Type // for saved prompts", in ⋯
 let promptsLoaded = false;
 // Titles of attached prompts, so the rail can name them on a page where the
@@ -1540,29 +1557,24 @@ function createLibrary() {
   lib.addEventListener("input", onLibraryInput);
   lib.addEventListener("change", onLibraryChange);
   lib.addEventListener("keydown", onLibraryKeydown);
+  // The highlight, and with it the prompt's pane, follows the pointer once it
+  // rests on a row. Following every row it crossed would change the pane as
+  // the pointer travelled diagonally across the list toward it.
   lib.addEventListener("mousemove", (e) => {
+    clearTimeout(libHoverTimer);
     const row = e.target.closest?.(".pm-lib-row[data-i]");
-    if (!row || Number(row.dataset.i) === libSel) return;
-    libSel = Number(row.dataset.i);
-    lib.querySelectorAll(".pm-lib-row[data-i]").forEach((r) => r.classList.toggle("pm-sel", Number(r.dataset.i) === libSel));
-    syncActiveDescendant();
+    if (!row || Number(row.dataset.i) === libSel || libPage !== "list") return;
+    const i = Number(row.dataset.i);
+    libHoverTimer = setTimeout(() => { if (panelOpen) libSelect(i); }, LIB_HOVER_MS);
   });
-  lib.addEventListener("pointerover", (e) => {
-    const row = e.target.closest?.(".pm-lib-row[data-i]");
-    if (!row || row.classList.contains("pm-lib-row-save")) return;
-    // Only a row that hides some of its words has anything to show beside it.
-    // A one-line prompt opened a panel repeating that one line (seen live).
-    if (rowIsClipped(row)) schedulePeek(Number(row.dataset.i));
-    else { clearTimeout(peekOpenTimer); if (libPeek !== null) hidePeek(); }
-  });
-  document.addEventListener("pointermove", trackPeekPointer, { capture: true, passive: true });
+  lib.addEventListener("mouseleave", () => clearTimeout(libHoverTimer));
 
   // Anywhere else closes it. Capture phase, so a host handler that stops the
   // event cannot strand the sheet open. Modals and toasts the sheet itself
   // raised (edit, delete, consent) do not count as "elsewhere".
   document.addEventListener("pointerdown", (e) => {
     if (!panelOpen) return;
-    if (e.target.closest?.("#pm-library, #pm-peek, #pm-save, #pm-keys, #pm-library-btn, #pm-help-btn, #pm-trigger, #pm-rail, .pm-modal-overlay, #pm-toast-stack")) return;
+    if (e.target.closest?.("#pm-library, #pm-save, #pm-keys, #pm-library-btn, #pm-help-btn, #pm-trigger, #pm-rail, .pm-modal-overlay, #pm-toast-stack")) return;
     togglePanel(false);
   }, true);
   // So does turning the wheel over the conversation: the sheet is fixed to
@@ -1571,11 +1583,39 @@ function createLibrary() {
   // comes from the host's own auto-scroll as an answer streams in.
   document.addEventListener("wheel", (e) => {
     if (!panelOpen) return;
-    if (e.target.closest?.("#pm-library, #pm-peek, #pm-save, #pm-keys, .pm-modal-overlay, #pm-toast-stack")) return;
+    if (e.target.closest?.("#pm-library, #pm-save, #pm-keys, .pm-modal-overlay, #pm-toast-stack")) return;
     togglePanel(false);
   }, { capture: true, passive: true });
 
-  storageGet(["pm_slash"], (r) => { slashEnabled = r.pm_slash !== false; });
+  storageGet(["pm_slash", LIB_LOCAL_KEY], (r) => {
+    slashEnabled = r.pm_slash !== false;
+    const local = r[LIB_LOCAL_KEY] || {};
+    libPins = new Set(Array.isArray(local.pins) ? local.pins : []);
+    libUses = local.uses && typeof local.uses === "object" ? local.uses : {};
+  });
+}
+
+function saveLibLocal() {
+  storageSet({ [LIB_LOCAL_KEY]: { pins: [...libPins], uses: libUses } });
+}
+
+/** A saved prompt was put to use: inserted, or added to context. Recent is ordered by this. */
+function recordUse(id) {
+  if (id == null) return;
+  libUses[id] = Date.now();
+  saveLibLocal();
+}
+
+function togglePin(id) {
+  if (libPins.has(id)) libPins.delete(id); else libPins.add(id);
+  saveLibLocal();
+}
+
+/** The user's tags, most used first, for the filter row. */
+function libTagList(limit = 8) {
+  const counts = new Map();
+  for (const p of savedPrompts) for (const t of p.tags || []) counts.set(t, (counts.get(t) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([t]) => t);
 }
 
 function togglePanel(force) {
@@ -1589,7 +1629,6 @@ function togglePanel(force) {
   }
   panelOpen = open;
   lib.hidden = !open;
-  hidePeek();
   const chip = document.getElementById("pm-library-btn");
   chip?.setAttribute("aria-expanded", String(open));
   syncHelpChipExpanded();
@@ -1599,12 +1638,18 @@ function togglePanel(force) {
   }
   if (open) {
     closeSlash();
+    // The card stands on the same edge of the chat box. It folds into the
+    // pill, which keeps the draft, rather than sit under the tray.
+    if (cardExpanded) hideCard();
+    libDetailOpen = false;
+    libTag = "";
+    libEditId = null;
+    libOrderUses = { ...libUses };
     libPage = "list";
     libView = "saved";
     searchQuery = "";
     libSel = 0;
     libMenu = false;
-    libRowMenu = null;
     libConfirm = null;
     libHistoryLoaded = false;   // Recent is refetched per opening: new rewrites belong in it
     renderLibrary();
@@ -1653,12 +1698,57 @@ function focusLibrarySearch() {
 }
 
 const LIB_ROOM_WANTED = 420;   // px above the chat box before the sheet may come down over its text
+const TRAY_MIN = 520, TRAY_MAX = 880;   // the tray's width, from the chat box's
+const TRAY_TWO_PANES = 600;             // narrower than this, one pane at a time
+const TRAY_ROOM_WANTED = 340;           // px above the box before the tray may come down over its text
 
-/** Where the sheet goes: on the pill's side, above it if there is room, else below. */
+/**
+ * Where the library goes: a tray on the chat box.
+ *
+ * It grows from the box's drawn frame, as wide as the box, and stands on the
+ * context chips, so a click on a row shows its chip landing just below. The
+ * rewrite card uses the same edge: the extension's surfaces live in one place
+ * instead of hanging off a pill in the corner, which on a centred box (ChatGPT's
+ * new chat) had nowhere to go. When the room above the box is too short, the
+ * tray comes down over the box's text, never over its row of buttons (Send).
+ * With no chat box on the page it falls back to a sheet on the pill.
+ */
 function positionLibrary() {
+  const lib = document.getElementById("pm-library");
+  if (!lib || lib.hidden) return;
+  const composer = findComposer();
+  const frame = composerFrame(composer);
+  const vw = window.innerWidth, vh = window.innerHeight, m = 12, gap = 8;
+  if (!frame || frame.width < 300 || frame.top < 120) { positionSheetOnPill(); return; }
+  lib.classList.add("pm-tray");
+  const width = Math.round(Math.min(vw - 2 * m, Math.max(TRAY_MIN, Math.min(TRAY_MAX, frame.width))));
+  const left = Math.round(Math.max(m, Math.min(frame.left + (frame.width - width) / 2, vw - width - m)));
+  let floor = frame.top - gap;
+  const rail = document.getElementById("pm-rail");
+  const rr = rail && !rail.hidden ? rail.getBoundingClientRect() : null;
+  if (rr && rr.width && rr.bottom <= frame.top + 2) floor = Math.min(floor, rr.top - gap);
+  lib.dataset.overBox = "false";
+  if (floor - m < TRAY_ROOM_WANTED) {
+    const controls = composerControlsTop(composer);
+    if (controls !== null && controls - gap > floor) { floor = controls - gap; lib.dataset.overBox = "true"; }
+  }
+  const height = Math.round(Math.max(200, Math.min(600, vh * 0.62, floor - m)));
+  Object.assign(lib.style, {
+    width: width + "px", left: left + "px", right: "auto", top: "auto",
+    bottom: Math.round(vh - floor) + "px", height: height + "px", maxHeight: height + "px",
+  });
+  lib.dataset.side = "above";
+  lib.classList.toggle("pm-tray-one", width < TRAY_TWO_PANES);
+}
+
+/** No chat box to grow from: a narrow sheet on the pill's side, one pane at a time. */
+function positionSheetOnPill() {
   const lib = document.getElementById("pm-library");
   const pill = document.getElementById("pm-trigger");
   if (!lib || lib.hidden || !pill) return;
+  lib.classList.remove("pm-tray");
+  lib.classList.add("pm-tray-one");
+  lib.style.height = "";
   const p = pill.getBoundingClientRect();
   const vw = window.innerWidth, vh = window.innerHeight, m = 12, gap = 10;
   const width = Math.min(368, vw - 2 * m);
@@ -1697,7 +1787,6 @@ function positionLibrary() {
   lib.style.bottom = up ? (vh - ceiling + gap) + "px" : "auto";
   lib.style.maxHeight = Math.max(160, up ? above : below) + "px";
   lib.dataset.side = up ? "above" : "below";
-  positionPeek();
 }
 
 function libraryItems() {
@@ -1708,11 +1797,19 @@ function libraryItems() {
       .map((h) => ({ kind: "recent", h }));
   }
   const tag = q.startsWith("#") ? q.slice(1) : null;
-  const list = savedPrompts
+  const matched = savedPrompts
+    .filter((p) => !libTag || (p.tags || []).includes(libTag))
     .filter((p) => !q || (tag !== null
       ? (p.tags || []).some((t) => t.toLowerCase().startsWith(tag))
-      : [p.title, p.content, ...(p.tags || [])].join(" ").toLowerCase().includes(q)))
-    .map((p) => ({ kind: "saved", p }));
+      : [p.title, p.content, ...(p.tags || [])].join(" ").toLowerCase().includes(q)));
+  // Pinned first, then by when each was last used or saved, then as the
+  // server sends them. Sorted on a copy, which keeps that last order.
+  // Recent means used or saved lately: a prompt saved a moment ago leads too.
+  const used = (p) => Math.max(libOrderUses[p.id] || 0, Date.parse(p.created_at || "") || 0);
+  const pinned = matched.filter((p) => libPins.has(p.id));
+  const rest = matched.filter((p) => !libPins.has(p.id)).map((p, k) => [p, k])
+    .sort((a, b) => used(b[0]) - used(a[0]) || a[1] - b[1]).map(([p]) => p);
+  const list = [...pinned, ...rest].map((p) => ({ kind: "saved", p, pinned: libPins.has(p.id) }));
   // What is in the chat box, offered as the first row when it is not already
   // saved. This is the whole of the old Save tab: title and tags were optional
   // there, and are one Edit away here.
@@ -1751,7 +1848,6 @@ function renderLibrary() {
   }
   afterListRender(lib);
   positionLibrary();
-  refreshPeek();
 }
 
 /** Typing in the search box redraws the rows only: rebuilding the input under
@@ -1761,10 +1857,32 @@ function renderLibraryList() {
   if (!lib || !panelOpen || libPage !== "list") return;
   const list = lib.querySelector("#pm-lib-list");
   if (list) list.innerHTML = libRowsHtml();
+  renderLibraryDetail();
   const foot = lib.querySelector("#pm-lib-foot");
   if (foot) foot.innerHTML = libFootHtml();
   afterListRender(lib);
-  refreshPeek();
+}
+
+/** The prompt's pane, redrawn for the row now highlighted. Not while editing. */
+function renderLibraryDetail() {
+  const detail = document.getElementById("pm-lib-detail");
+  if (!detail || libPage === "edit") return;
+  detail.dataset.i = String(libSel);
+  detail.innerHTML = libDetailHtml();
+  detail.scrollTop = 0;
+}
+
+/** Move the highlight: the row, the search box's active row, and the pane all follow. */
+function libSelect(i) {
+  if (i === libSel) return;
+  libSel = i;
+  document.querySelectorAll("#pm-library .pm-lib-row[data-i]").forEach((r) => {
+    const on = Number(r.dataset.i) === libSel;
+    r.classList.toggle("pm-sel", on);
+    r.setAttribute("aria-selected", String(on));
+  });
+  syncActiveDescendant();
+  renderLibraryDetail();
 }
 
 function afterListRender(lib) {
@@ -1809,7 +1927,17 @@ function libHeadHtml() {
     `<div class="pm-lib-views" role="group" aria-label="Show">` +
     `<button type="button" id="pm-lib-view-saved" data-view="saved" aria-pressed="${libView === "saved"}" title="Prompts you chose to keep">Saved</button>` +
     `<button type="button" id="pm-lib-view-recent" data-view="recent" aria-pressed="${libView === "recent"}" title="Every rewrite you have made">History</button></div>` +
-    more + `</div>`;
+    more + `</div>` + libTagsHtml();
+}
+
+/** One click narrows the list to a tag. Only once there are tags to filter by. */
+function libTagsHtml() {
+  if (libView !== "saved" || libPage !== "list") return "";
+  const tags = libTagList();
+  if (libTag && !tags.includes(libTag)) tags.push(libTag);
+  if (!tags.length) return "";
+  const b = (t, label) => `<button type="button" data-tagfilter="${escHtml(t)}" aria-pressed="${libTag === t}">${label}</button>`;
+  return `<div class="pm-tray-tags" role="group" aria-label="Filter by tag">${b("", "All")}${tags.map((t) => b(t, "#" + escHtml(t))).join("")}</div>`;
 }
 
 function libBodyHtml() {
@@ -1840,7 +1968,70 @@ function libBodyHtml() {
       `<span class="pm-lib-status" id="pm-feedback-status" role="status"></span></div>` +
       `<div class="pm-lib-recent-feedback" id="pm-feedback-recent"></div></div>`;
   }
-  return `<div class="pm-lib-list" id="pm-lib-list" role="listbox" aria-label="${libView === "saved" ? "Saved prompts" : "Rewrite history"}">${libRowsHtml()}</div>`;
+  // The list and the prompt it has highlighted, side by side. A narrow tray
+  // shows one at a time (libDetailOpen), and the editor takes the prompt's
+  // place while it is open.
+  return `<div class="pm-tray-body${libDetailOpen || libPage === "edit" ? " pm-tray-showing-detail" : ""}">` +
+    `<div class="pm-lib-list" id="pm-lib-list" role="listbox" aria-label="${libView === "saved" ? "Saved prompts" : "Rewrite history"}">${libRowsHtml()}</div>` +
+    `<div class="pm-tray-detail" id="pm-lib-detail" data-i="${libSel}" aria-live="polite">${libPage === "edit" ? libEditorHtml() : libDetailHtml()}</div></div>`;
+}
+
+/** Blanks such as {topic} drawn as blanks: they are asked for on Insert. */
+function withBlanks(text) {
+  return escHtml(text).replace(/\{([a-zA-Z][\w -]{0,30})\}/g, '<span class="pm-blank">{$1}</span>');
+}
+
+/** The highlighted row, whole: what it says, where it came from, what can be done with it. */
+function libDetailHtml() {
+  if (isLoadingTab || (libView === "recent" && !libHistoryLoaded)) return "";
+  const it = libraryItems()[libSel];
+  if (!it) return "";
+  const verb = libVerb();
+  const btn = (act, label, cls = "", extra = "") => `<button type="button" class="pm-lib-verb${cls}" data-act="${act}"${extra}>${label}</button>`;
+  if (it.kind === "save") {
+    return `<div class="pm-detail-head"><div class="pm-detail-title">From the chat box</div></div>` +
+      `<div class="pm-detail-text">${escHtml(it.text)}</div>` +
+      `<div class="pm-detail-acts">${btn("save", "Save to library")}</div>`;
+  }
+  if (it.kind === "recent") {
+    const h = it.h;
+    return `<div class="pm-detail-head"><div class="pm-detail-title">Rewrite</div>` +
+      `<div class="pm-lib-meta">${escHtml(STYLE_NAMES[h.mode] || "")}${h.timestamp ? `<span>${escHtml(getTimeAgo(h.timestamp))}</span>` : ""}</div></div>` +
+      `<div class="pm-detail-text">${escHtml(h.enhanced)}<div class="pm-detail-from"><span>Rewritten from</span>${escHtml(h.original)}</div></div>` +
+      `<div class="pm-detail-acts">${btn("insert", verb, "", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_KEY}↵"`)}` +
+      `${btn("keep", "Save to library", " pm-lib-verb-quiet")}${btn("copy", "Copy", " pm-lib-verb-quiet")}</div>`;
+  }
+  const p = it.p;
+  const att = selectedIds.has(p.id);
+  const used = libUses[p.id] ? `<span>used ${escHtml(getTimeAgo(new Date(libUses[p.id]).toISOString()))}</span>` : "";
+  const meta = promptMetaHtml(p).replace("</div>", used + "</div>") || (used ? `<div class="pm-lib-meta">${used}</div>` : "");
+  const acts = libConfirm === p.id
+    ? `<div class="pm-lib-confirm" role="alertdialog" aria-label="Delete this prompt?"><span>Delete “${escHtml(promptTitle(p))}”?</span>` +
+      `<button type="button" data-act="keepit">Keep</button><button type="button" class="pm-lib-danger" data-act="del" id="pm-lib-del">Delete</button></div>`
+    : btn("attach", att ? "In context ✓" : "Add to context", att ? " pm-lib-verb-on" : "", ` aria-pressed="${att}" data-pm-tip="${att ? "Take it out of context" : "Add to context for your next message or rewrite"}" data-pm-key="↵"`) +
+      btn("insert", verb, " pm-lib-verb-quiet", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_KEY}↵"`) +
+      `<span class="pm-detail-spacer"></span>` +
+      `<button type="button" class="pm-lib-icon pm-detail-pin" data-act="pin" aria-pressed="${libPins.has(p.id)}" aria-label="${libPins.has(p.id) ? "Unpin" : "Pin to the top"}" data-pm-tip="${libPins.has(p.id) ? "Unpin" : "Pin to the top"}">★</button>` +
+      `<button type="button" class="pm-lib-icon" data-act="improve" aria-label="Improve" data-pm-tip="Improve with ⊕">${LIB_ICON.spark}</button>` +
+      `<button type="button" class="pm-lib-icon" data-act="edit" aria-label="Edit" data-pm-tip="Edit">${LIB_ICON.edit}</button>` +
+      `<button type="button" class="pm-lib-icon pm-lib-danger" data-act="ask" aria-label="Delete" data-pm-tip="Delete">${LIB_ICON.trash}</button>`;
+  return `<div class="pm-detail-head"><button type="button" class="pm-lib-icon pm-detail-back" data-act="listback" aria-label="Back to the list">${LIB_ICON.back}</button>` +
+    `<div class="pm-detail-title${p.title ? "" : " pm-detail-untitled"}">${escHtml(p.title || "Untitled prompt")}</div>${meta}</div>` +
+    `<div class="pm-detail-text">${withBlanks(p.content)}</div>` +
+    `<div class="pm-detail-acts">${acts}</div>`;
+}
+
+/** Edit a saved prompt where it is shown: name, words, tags. */
+function libEditorHtml() {
+  const p = savedPrompts.find((x) => x.id === libEditId) || { title: "", content: "", tags: [] };
+  return `<div class="pm-detail-head"><div class="pm-detail-title">${libEditId === "new" ? "New prompt" : "Edit prompt"}</div></div>` +
+    `<label class="pm-editor-field"><span>Name</span><input id="pm-ed-title" class="pm-lib-input" type="text" autocomplete="off" maxlength="120" value="${escHtml(p.title || "")}" placeholder="What you will look for it by"></label>` +
+    `<label class="pm-editor-field pm-editor-grow"><span>Prompt</span><textarea id="pm-ed-content" class="pm-lib-input" placeholder="Write it once, well. Use {curly braces} for the parts that change each time.">${escHtml(p.content || "")}</textarea></label>` +
+    `<label class="pm-editor-field"><span>Tags</span><input id="pm-ed-tags" class="pm-lib-input" type="text" autocomplete="off" value="${escHtml((p.tags || []).join(", "))}" placeholder="writing, email"></label>` +
+    `<div class="pm-editor-hint">Blanks like <span class="pm-blank">{topic}</span> are asked for each time you insert it.</div>` +
+    `<div class="pm-detail-acts"><button type="button" class="pm-lib-verb" data-act="edsave" id="pm-ed-save">Save</button>` +
+    `<button type="button" class="pm-lib-verb pm-lib-verb-quiet" data-act="edcancel">Cancel</button>` +
+    `<span class="pm-lib-status" id="pm-ed-status" role="status"><kbd>${CMD_KEY}↵</kbd> save · <kbd>esc</kbd> cancel</span></div>`;
 }
 
 function libRowsHtml() {
@@ -1851,58 +2042,43 @@ function libRowsHtml() {
   libSel = Math.max(0, Math.min(libSel, list.length - 1));
   if (!list.length) {
     const q = searchQuery.trim();
-    if (q) return `<div class="pm-lib-empty"><b>Nothing matches “${escHtml(q)}”</b>Search looks at titles, text and tags. Start with # to match a tag.</div>`;
+    if (q || libTag) return `<div class="pm-lib-empty"><b>Nothing matches${q ? ` “${escHtml(q)}”` : ` #${escHtml(libTag)}`}</b>Search looks at names, text and tags. Start with # to match a tag.</div>`;
     if (libView === "recent") return `<div class="pm-lib-empty"><b>No history yet</b>Every rewrite you make with ⊕ shows up here. Save the ones worth keeping.</div>`;
-    return `<div class="pm-lib-empty"><b>Your library is empty</b>Type a prompt in the chat box and it appears here, ready to save. ${CMD_KEY}S saves a rewrite from its card.</div>`;
+    return `<div class="pm-lib-empty"><b>Your library is empty</b>${CMD_KEY}S saves a rewrite from its card.</div>`;
   }
-  const verb = libVerb();
+  const grouped = libView === "saved" && !searchQuery.trim() && list.some((it) => it.pinned);
+  const open = `<button type="button" class="pm-lib-icon pm-lib-open" data-act="open" tabindex="-1" aria-label="Open">${LIB_ICON.chevron}</button>`;
   return list.map((it, i) => {
     const sel = i === libSel ? " pm-sel" : "";
     const id = `pm-lib-row-${i}`;
+    const head = grouped && (i === 0 || (!it.pinned && list[i - 1].pinned))
+      ? `<div class="pm-lib-group" role="presentation">${it.pinned ? "Pinned" : "Recent"}</div>` : "";
     if (it.kind === "save") {
       return `<div class="pm-lib-row pm-lib-row-save${sel}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}">` +
         `<span class="pm-lib-dot" aria-hidden="true">+</span><div class="pm-lib-text"><div class="pm-lib-title">Save “${escHtml(it.text.slice(0, 44))}${it.text.length > 44 ? "…" : ""}”</div>` +
-        `<div class="pm-lib-preview">From the chat box</div></div>` +
-        `<div class="pm-lib-acts"><button type="button" class="pm-lib-verb" data-act="save">Save</button></div></div>`;
+        `<div class="pm-lib-preview">From the chat box</div></div></div>`;
     }
     if (it.kind === "recent") {
       const h = it.h;
       const ago = h.timestamp ? getTimeAgo(h.timestamp) : "";
-      let row = `<div class="pm-lib-row pm-lib-row-recent${sel}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}">` +
+      return `<div class="pm-lib-row pm-lib-row-recent${sel}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}">` +
         `<span class="pm-lib-dot" aria-hidden="true"></span><div class="pm-lib-text"><div class="pm-lib-title pm-lib-clamp">${escHtml(norm(h.enhanced))}</div>` +
-        `<div class="pm-lib-preview">from “${escHtml(norm(h.original))}”${ago ? " · " + ago : ""}</div></div>` +
-        `<div class="pm-lib-acts"><button type="button" class="pm-lib-icon" data-act="more" aria-label="More actions" aria-expanded="${libRowMenu === "r" + i}">${LIB_ICON.more}</button>` +
-        `<button type="button" class="pm-lib-verb" data-act="insert">${verb}</button></div></div>`;
-      if (libRowMenu === "r" + i) {
-        row += `<div class="pm-lib-rowmenu"><button type="button" data-act="keep" data-i="${i}">Save to library</button><button type="button" data-act="copy" data-i="${i}">Copy</button></div>`;
-      }
-      return row;
+        `<div class="pm-lib-preview">from “${escHtml(norm(h.original))}”${ago ? " · " + ago : ""}</div></div>${open}</div>`;
     }
     const p = it.p;
-    if (libConfirm === p.id) {
-      return `<div class="pm-lib-confirm" data-i="${i}" role="alertdialog" aria-label="Delete this prompt?"><span>Delete “${escHtml(promptTitle(p))}”?</span>` +
-        `<button type="button" data-act="keepit" data-i="${i}">Keep</button><button type="button" class="pm-lib-danger" data-act="del" data-i="${i}" id="pm-lib-del">Delete</button></div>`;
-    }
     const att = selectedIds.has(p.id);
-    // A prompt the user named leads with that name and two lines of its text.
-    // One they did not name leads with its own words, three lines of them: a
+    // A prompt the user named leads with that name and a line of its text.
+    // One they did not name leads with its own words, two lines of them: a
     // title cut from its first sentence read as a name nobody had given it.
     const words = p.title
-      ? `<div class="pm-lib-title">${escHtml(p.title)}</div><div class="pm-lib-preview pm-lib-clamp">${escHtml(norm(p.content))}</div>`
+      ? `<div class="pm-lib-title">${escHtml(p.title)}</div><div class="pm-lib-preview">${escHtml(norm(p.content))}</div>`
       : `<div class="pm-lib-title pm-lib-untitled">${escHtml(norm(p.content))}</div>`;
     // The tick is what a click on the row leaves behind: in context or not.
     // aria-checked, because aria-selected already means "highlighted" here
     // (the search box points at that row with aria-activedescendant).
-    let row = `<div class="pm-lib-row${sel}${att ? " pm-att" : ""}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}" aria-checked="${att}">` +
-      `<span class="pm-lib-tick" aria-hidden="true">${LIB_ICON.tick}</span><div class="pm-lib-text">${words}${promptMetaHtml(p)}</div>` +
-      `<div class="pm-lib-acts">` +
-      `<button type="button" class="pm-lib-icon" data-act="more" aria-label="More actions" aria-expanded="${libRowMenu === p.id}">${LIB_ICON.more}</button>` +
-      `<button type="button" class="pm-lib-verb" data-act="insert" data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_KEY}↵">${verb}</button></div></div>`;
-    if (libRowMenu === p.id) {
-      row += `<div class="pm-lib-rowmenu"><button type="button" data-act="improve" data-i="${i}" title="Rewrite this saved prompt, then update it or save a new one">Improve</button>` +
-        `<button type="button" data-act="edit" data-i="${i}">Edit</button><button type="button" class="pm-lib-danger" data-act="ask" data-i="${i}">Delete</button></div>`;
-    }
-    return row;
+    return head + `<div class="pm-lib-row${sel}${att ? " pm-att" : ""}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}" aria-checked="${att}">` +
+      `<span class="pm-lib-tick" aria-hidden="true">${LIB_ICON.tick}</span><div class="pm-lib-text">${words}</div>` +
+      (it.pinned ? `<span class="pm-lib-pinned" aria-label="Pinned">★</span>` : "") + open + `</div>`;
   }).join("");
 }
 
@@ -2303,31 +2479,37 @@ function libAct(act, i) {
       if (!it) return;
       if (it.kind === "save") { libSaveText(it.text, libRowEl(i)); return; }
       if (it.kind === "recent") { libInsert(it.h.enhanced, it.h.log_id); return; }
+      recordUse(it.p.id);
       libInsert(it.p.content);
       return;
     case "save":
       if (it?.kind === "save") libSaveText(it.text, libRowEl(i));
       return;
     case "attach":
-      if (it?.kind === "saved") toggleAttachment(it.p);
+      if (it?.kind !== "saved") return;
+      if (!selectedIds.has(it.p.id)) recordUse(it.p.id);
+      toggleAttachment(it.p);
       return;
-    case "more":
-      if (!it || it.kind === "save") return;
-      libRowMenu = it.kind === "recent" ? (libRowMenu === "r" + (i ?? libSel) ? null : "r" + (i ?? libSel)) : (libRowMenu === it.p.id ? null : it.p.id);
-      libSel = i ?? libSel;
-      renderLibraryList();
+    case "pin":
+      if (it?.kind === "saved") {
+        // Pinned moves to the top: the highlight goes with it, so the pane
+        // still shows the prompt that was just pinned.
+        togglePin(it.p.id);
+        libSel = Math.max(0, libraryItems().findIndex((x) => x.kind === "saved" && x.p.id === it.p.id));
+        renderLibraryList();
+      }
       return;
     case "edit":
-      if (it?.kind === "saved") { libRowMenu = null; showEditModal(it.p); }
+      if (it?.kind === "saved") openEditor(it.p.id);
       return;
     case "improve":
-      if (it?.kind === "saved") { libRowMenu = null; improveSavedPrompt(it.p); }
+      if (it?.kind === "saved") improveSavedPrompt(it.p);
       return;
     case "ask":
-      if (it?.kind === "saved") { libConfirm = it.p.id; libRowMenu = null; renderLibraryList(); document.getElementById("pm-lib-del")?.focus(); }
+      if (it?.kind === "saved") { libConfirm = it.p.id; renderLibraryDetail(); document.getElementById("pm-lib-del")?.focus(); }
       return;
     case "keepit":
-      libConfirm = null; renderLibraryList(); focusLibrarySearch();
+      libConfirm = null; renderLibraryDetail(); focusLibrarySearch();
       return;
     case "del":
       if (it?.kind === "saved") {
@@ -2336,6 +2518,9 @@ function libAct(act, i) {
         deleteSavedPrompt(id).then(async (ok) => {
           if (!ok) { showToast("Could not delete", "error"); renderLibraryList(); return; }
           if (selectedIds.has(id)) toggleAttachment({ id });
+          libPins.delete(id);
+          delete libUses[id];
+          saveLibLocal();
           await fetchSavedPrompts();
           renderLibrary();
           focusLibrarySearch();
@@ -2343,15 +2528,13 @@ function libAct(act, i) {
       }
       return;
     case "keep":
-      if (it?.kind === "recent") { libRowMenu = null; libSaveText(it.h.enhanced, libRowEl(i)); }
+      if (it?.kind === "recent") libSaveText(it.h.enhanced, libRowEl(i));
       return;
     case "copy":
       if (it?.kind === "recent") {
-        libRowMenu = null;
         navigator.clipboard.writeText(it.h.enhanced).then(
           () => showToast("Copied", "success"),
           () => showToast("Could not copy", "error"));
-        renderLibraryList();
       }
       return;
   }
@@ -2361,9 +2544,8 @@ function onLibraryClick(e) {
   const b = e.target.closest("button");
   if (b?.dataset.view) {
     libView = b.dataset.view;
-    libSel = 0; libRowMenu = null; libConfirm = null;
-    hidePeek();
-    renderLibrary();
+    libSel = 0; libConfirm = null; libDetailOpen = false;
+      renderLibrary();
     focusLibrarySearch();
     if (libView === "recent" && !libHistoryLoaded) {
       fetchEnhanceHistory().then(() => { libHistoryLoaded = true; renderLibrary(); });
@@ -2373,6 +2555,13 @@ function onLibraryClick(e) {
   if (b?.dataset.style) {
     setDefaultStyle(b.dataset.style);
     renderLibrary();
+    return;
+  }
+  if (b && b.dataset.tagfilter !== undefined) {
+    libTag = b.dataset.tagfilter;
+    libSel = 0; libConfirm = null; libDetailOpen = false;
+    renderLibrary();
+    focusLibrarySearch();
     return;
   }
   const act = b?.dataset.act;
@@ -2394,10 +2583,14 @@ function onLibraryClick(e) {
     case "signin": openSettings(); return;
     case "clear": clearAttachments(); return;
     case "rewrite": closeLibrary(); handleEnhance(); return;
+    case "listback": libDetailOpen = false; renderLibrary(); focusLibrarySearch(); return;
+    case "edsave": saveEditor(); return;
+    case "edcancel": closeEditor(); return;
     case "sendfeedback": sendLibraryFeedback(); return;
   }
   const rowEl = e.target.closest("[data-i]");
   const i = rowEl ? Number(rowEl.dataset.i) : undefined;
+  if (act === "open") { libSel = i; libDetailOpen = true; renderLibrary(); return; }
   if (act) { libAct(act, i); return; }
   // A click on the row itself does what the row is for: see libAct("primary").
   if (rowEl?.classList.contains("pm-lib-row")) { libSel = i; libAct("primary", i); }
@@ -2406,8 +2599,7 @@ function onLibraryClick(e) {
 function onLibraryInput(e) {
   if (e.target.id !== "pm-lib-q") return;
   searchQuery = e.target.value;
-  libSel = 0; libRowMenu = null; libConfirm = null;
-  hidePeek();
+  libSel = 0; libConfirm = null;
   renderLibraryList();
 }
 
@@ -2422,14 +2614,28 @@ function onLibraryChange(e) {
 function onLibraryKeydown(e) {
   if (e.isComposing) return;
   const mod = e.metaKey || e.ctrlKey;
+  if (libPage === "edit") {
+    // The editor's own keys: esc cancels, ⌘↵ saves from anywhere in it, ↵
+    // saves from its one-line fields (the prompt itself takes new lines).
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeEditor(); return; }
+    if (e.key === "Enter" && (mod || e.target.tagName === "INPUT")) { e.preventDefault(); e.stopPropagation(); saveEditor(); }
+    return;
+  }
   if (e.key === "Escape") {
     e.preventDefault(); e.stopPropagation();
-    if (libMenu || libRowMenu || libConfirm) { libMenu = false; libRowMenu = null; libConfirm = null; renderLibrary(); focusLibrarySearch(); return; }
-    if (libPeek !== null) { hidePeek(); return; }
+    if (libMenu || libConfirm) { libMenu = false; libConfirm = null; renderLibrary(); focusLibrarySearch(); return; }
+    if (libDetailOpen) { libDetailOpen = false; renderLibrary(); focusLibrarySearch(); return; }
     if (libPage === "privacy" || libPage === "feedback") {
       libPage = "list"; renderLibrary(); focusLibrarySearch(); return;
     }
     closeLibrary();
+    return;
+  }
+  // From the prompt's pane, ← goes back to the list.
+  if (e.key === "ArrowLeft" && e.target.closest?.("#pm-lib-detail")) {
+    e.preventDefault();
+    if (libDetailOpen) { libDetailOpen = false; renderLibrary(); }
+    focusLibrarySearch();
     return;
   }
   // The keys below drive the list from the search box, as in a combobox.
@@ -2438,189 +2644,105 @@ function onLibraryKeydown(e) {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     if (!n) return;
-    libSel = (libSel + (e.key === "ArrowDown" ? 1 : -1) + n) % n;
-    libRowMenu = null;
-    renderLibraryList();
-    if (libPeek !== null) showPeek(libSel);   // an open preview follows the highlight
+    libSelect((libSel + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
+    libRowEl()?.scrollIntoView({ block: "nearest" });
     return;
   }
-  // → at the end of the query opens the whole prompt; ← puts it away. Only at
-  // the end, so → still moves the caret through what was typed.
+  // → at the end of the query goes to the prompt's pane: on a narrow tray it
+  // opens it, on a wide one the keyboard moves into its buttons. Only at the
+  // end, so → still moves the caret through what was typed.
   if (e.key === "ArrowRight" && e.target.selectionStart === e.target.value.length && !mod && !e.shiftKey) {
-    const it = libraryItems()[libSel];
-    if (it && it.kind !== "save") { e.preventDefault(); showPeek(libSel); }
+    if (!n) return;
+    e.preventDefault();
+    if (isOnePane()) { libDetailOpen = true; renderLibrary(); }
+    document.querySelector("#pm-lib-detail .pm-detail-acts button")?.focus({ preventScroll: true });
     return;
   }
-  if (e.key === "ArrowLeft" && libPeek !== null) {
+  if (e.key === "ArrowLeft" && libDetailOpen) {
     e.preventDefault();
-    hidePeek();
+    libDetailOpen = false;
+    renderLibrary();
     return;
   }
   if (e.key === "Enter") {
     e.preventDefault(); e.stopPropagation();
     if (!n) return;
-    // ↵ does what a click does; ⌘↵ inserts. The other way round from before:
-    // the keyboard and the pointer now agree on what picking a row means.
+    // ↵ does what a click does; ⌘↵ inserts. The keyboard and the pointer
+    // agree on what picking a row means.
     const it = libraryItems()[libSel];
     libAct(mod && it?.kind === "saved" ? "insert" : "primary");
   }
 }
 
-// ── The whole prompt, beside the sheet ──
-//
-// A row shows two or three lines, and a saved prompt is often a paragraph.
-// Reading one used to mean Edit, a modal. Resting the pointer on a row, or
-// → from the search box, opens the whole of it beside the sheet, with the
-// row's own actions under it.
-//
-// Hover waits 350ms with the pointer still over one row (a pointer crossing
-// the list on its way somewhere else is not asking), then moves to the next
-// row at once while one is open. Leaving waits 150ms, long enough to cross
-// the gap into the preview to reach its buttons.
-//
-// Leaving is read from pointermove, not pointerleave. Both the list and the
-// preview redraw under the pointer (a click on Attach relabels its button),
-// and after the node under the pointer is replaced Chrome sends no leave
-// event for its old ancestors: the preview stayed up after the pointer had
-// gone.
-
-const PEEK_OPEN_MS = 350;
-const PEEK_SWITCH_MS = 60;
-const PEEK_CLOSE_MS = 150;
-let libPeek = null;           // the list index the preview shows, or null
-let peekOpenTimer = null;
-let peekCloseTimer = null;
-
-function peekItem() {
-  if (libPeek === null || !panelOpen || libPage !== "list") return null;
-  const it = libraryItems()[libPeek];
-  return it && it.kind !== "save" ? it : null;
+/** A tray too narrow for two panes shows the list or the prompt, not both. */
+function isOnePane() {
+  return Boolean(document.getElementById("pm-library")?.classList.contains("pm-tray-one"));
 }
 
-function peekHtml(it) {
-  const verb = libVerb();
-  const btn = (act, label, extra = "") => `<button type="button" class="pm-lib-verb${extra}" data-act="${act}">${label}</button>`;
-  if (it.kind === "recent") {
-    const h = it.h;
-    return `<div class="pm-peek-head"><div class="pm-peek-title">Rewrite</div>` +
-      `<div class="pm-lib-meta">${escHtml(STYLE_NAMES[h.mode] || "")}${h.timestamp ? `<span>${escHtml(getTimeAgo(h.timestamp))}</span>` : ""}</div></div>` +
-      `<div class="pm-peek-body">${escHtml(h.enhanced)}<div class="pm-peek-from"><span>Rewritten from</span>${escHtml(h.original)}</div></div>` +
-      `<div class="pm-peek-foot">${btn("copy", "Copy", " pm-lib-verb-quiet")}${btn("keep", "Save to library", " pm-lib-verb-quiet")}${btn("insert", verb)}</div>`;
+// ── The editor: a saved prompt's name, words and tags, in its own pane ──
+
+function openEditor(id) {
+  libPage = "edit";
+  libEditId = id;
+  libConfirm = null;
+  renderLibrary();
+  document.getElementById(id === "new" ? "pm-ed-content" : "pm-ed-title")?.focus({ preventScroll: true });
+}
+
+function closeEditor() {
+  libPage = "list";
+  libEditId = null;
+  renderLibrary();
+  focusLibrarySearch();
+}
+
+async function saveEditor() {
+  const title = document.getElementById("pm-ed-title")?.value.trim() || "";
+  const content = document.getElementById("pm-ed-content")?.value.trim() || "";
+  const tags = [...new Set((document.getElementById("pm-ed-tags")?.value || "")
+    .split(",").map((t) => t.trim().replace(/^#/, "")).filter(Boolean))];
+  const status = document.getElementById("pm-ed-status");
+  const go = document.getElementById("pm-ed-save");
+  if (!content) {
+    if (status) status.textContent = "Write the prompt first.";
+    document.getElementById("pm-ed-content")?.focus({ preventScroll: true });
+    return;
   }
-  const p = it.p;
-  const att = selectedIds.has(p.id);
-  return `<div class="pm-peek-head"><div class="pm-peek-title${p.title ? "" : " pm-peek-untitled"}">${escHtml(p.title || "Untitled prompt")}</div>` +
-    promptMetaHtml(p) + `</div>` +
-    `<div class="pm-peek-body">${escHtml(p.content)}</div>` +
-    `<div class="pm-peek-foot">${btn("edit", "Edit", " pm-lib-verb-quiet")}` +
-    btn("attach", att ? "Detach" : "Attach as context", " pm-lib-verb-quiet") + btn("insert", verb) + `</div>`;
-}
-
-/** Show the preview for list row i, or redraw it where it is. */
-function showPeek(i) {
-  clearTimeout(peekOpenTimer);
-  clearTimeout(peekCloseTimer);
-  peekCloseTimer = null;
-  libPeek = i;
-  const it = peekItem();
-  if (!it) { hidePeek(); return; }
-  let peek = document.getElementById("pm-peek");
-  if (!peek) {
-    peek = document.createElement("div");
-    peek.id = "pm-peek";
-    peek.className = "pm-lib pm-peek";
-    peek.setAttribute("role", "region");
-    // Its buttons run the row's verbs; the list works out which row from here.
-    peek.addEventListener("click", (e) => {
-      const act = e.target.closest("button")?.dataset.act;
-      if (act && libPeek !== null) libAct(act, libPeek);
-    });
-    document.body.appendChild(peek);
-  }
-  peek.setAttribute("aria-label", "The whole prompt");
-  peek.dataset.i = String(i);
-  peek.innerHTML = peekHtml(it);
-  positionPeek();
-  watchScrollable(peek.querySelector(".pm-peek-body"));
-  markScrollable(peek.querySelector(".pm-peek-body"));
-}
-
-function hidePeek() {
-  clearTimeout(peekOpenTimer);
-  clearTimeout(peekCloseTimer);
-  peekCloseTimer = null;
-  libPeek = null;
-  document.getElementById("pm-peek")?.remove();
-}
-
-/** Whether a row's clamped text runs past what it shows. */
-function rowIsClipped(row) {
-  return [...row.querySelectorAll(".pm-lib-clamp, .pm-lib-untitled")].some((el) => el.scrollHeight > el.clientHeight + 1);
-}
-
-/** Pointer came to rest on a row: open (or move) the preview after a beat. */
-function schedulePeek(i) {
-  clearTimeout(peekOpenTimer);
-  if (libPeek === i) return;
-  peekOpenTimer = setTimeout(() => showPeek(i), libPeek === null ? PEEK_OPEN_MS : PEEK_SWITCH_MS);
-}
-
-/** Every pointer move while the sheet is open: is it still on the sheet or the preview? */
-function trackPeekPointer(e) {
-  if (!panelOpen) return;
-  const inside = Boolean(e.target.closest?.("#pm-library, #pm-peek"));
-  if (inside) {
-    clearTimeout(peekCloseTimer);
-    peekCloseTimer = null;
+  if (go?.disabled) return;
+  if (go) { go.disabled = true; go.textContent = "Saving\u2026"; }
+  const id = libEditId;
+  let ok, savedId = id, message;
+  if (id === "new") {
+    const outcome = await createSavedPrompt(content, title, tags);
+    ok = outcome === "saved";
+    savedId = lastSavedPromptId;
+    message = outcome === "duplicate" ? "Already in your library" : ok ? "Saved to your library" : null;
+    if (outcome === "duplicate") { ok = true; savedId = lastSavedPromptId; }
+    else if (ok) { statsBump("saves"); tipDone("save"); }
   } else {
-    clearTimeout(peekOpenTimer);     // it left before the preview was asked for
-    if (libPeek !== null && !peekCloseTimer) peekCloseTimer = setTimeout(hidePeek, PEEK_CLOSE_MS);
+    const p = savedPrompts.find((x) => x.id === id);
+    const fields = {};
+    if (p && content !== p.content) fields.content = content;
+    if (p && title !== (p.title || "")) fields.title = title || null;
+    if (p && JSON.stringify(tags) !== JSON.stringify(p.tags || [])) fields.tags = tags;
+    ok = !p || !Object.keys(fields).length || await updateSavedPrompt(id, fields);
+    message = ok ? "Saved" : null;
   }
-}
-
-/** Redraw an open preview after the list changed under it. */
-function refreshPeek() {
-  if (libPeek === null) return;
-  if (peekItem()) showPeek(libPeek); else hidePeek();
-}
-
-/**
- * Beside the sheet, on the side away from the pill's edge, where the page has
- * room. Where it has none (a narrow window), over the sheet itself: the
- * preview is the thing being looked at, and it goes when the pointer leaves.
- */
-function positionPeek() {
-  const peek = document.getElementById("pm-peek");
-  const lib = document.getElementById("pm-library");
-  if (!peek || !lib || lib.hidden) return;
-  const r = lib.getBoundingClientRect();
-  const vw = window.innerWidth, m = 12, gap = 8;
-  const width = Math.min(360, vw - 2 * m);
-  peek.style.width = width + "px";
-  const leftRoom = r.left - gap - m, rightRoom = vw - r.right - gap - m;
-  let left;
-  if (leftRoom >= width && (leftRoom >= rightRoom || rightRoom < width)) left = r.left - gap - width;
-  else if (rightRoom >= width) left = r.right + gap;
-  else left = Math.max(m, Math.min(r.left, vw - width - m));
-  peek.style.left = left + "px";
-  peek.style.maxHeight = Math.max(200, r.height) + "px";
-  // Level with the sheet's edge nearest the pill, so the two read as a pair.
-  if (lib.dataset.side === "below") { peek.style.top = r.top + "px"; peek.style.bottom = "auto"; }
-  else { peek.style.bottom = (window.innerHeight - r.bottom) + "px"; peek.style.top = "auto"; }
-  // But never on the context chips or the chat box: the chips are where a
-  // tick shows up, and the preview sat on them (seen live). It rises above
-  // whichever it would cover, if that leaves it room to be read.
-  const obstacles = [document.getElementById("pm-rail"), findComposer() && { getBoundingClientRect: () => composerFrame(findComposer()) }]
-    .filter((o) => o && !o.hidden).map((o) => o.getBoundingClientRect()).filter((o) => o && o.width);
-  for (const o of obstacles) {
-    const pr = peek.getBoundingClientRect();
-    if (!(pr.left < o.right && pr.right > o.left && pr.top < o.bottom && pr.bottom > o.top)) continue;
-    const limit = o.top - gap;
-    if (limit - m < 160) continue;
-    peek.style.top = "auto";
-    peek.style.bottom = (window.innerHeight - limit) + "px";
-    peek.style.maxHeight = Math.min(parseFloat(peek.style.maxHeight), limit - m) + "px";
+  if (!ok) {
+    if (go) { go.disabled = false; go.textContent = "Save"; }
+    if (status) status.textContent = "Could not save. Check your connection and try again.";
+    return;
   }
+  await fetchSavedPrompts();
+  libPage = "list";
+  libEditId = null;
+  libTag = "";
+  searchQuery = "";
+  const at = libraryItems().findIndex((it) => it.kind === "saved" && it.p.id === savedId);
+  libSel = at >= 0 ? at : 0;
+  if (panelOpen) { renderLibrary(); focusLibrarySearch(); libRowEl()?.scrollIntoView({ block: "nearest" }); }
+  if (message) showToast(message, message.startsWith("Already") ? "info" : "success",
+    id === "new" && message === "Saved to your library" && savedId ? { label: "Undo", run: () => undoSave(savedId) } : null);
 }
 
 // ── Keyboard shortcuts: a map over the page ──
@@ -2975,7 +3097,7 @@ let railShown = new Set();     // ids on the rail at its last draw, to animate o
 
 function renderRail() {
   let rail = document.getElementById("pm-rail");
-  if (!selectedIds.size) { rail?.remove(); railShown = new Set(); return; }
+  if (!selectedIds.size) { rail?.remove(); railShown = new Set(); if (panelOpen) positionLibrary(); return; }
   if (!rail) {
     rail = document.createElement("div");
     rail.id = "pm-rail";
@@ -3005,6 +3127,8 @@ function renderRail() {
   }).join("") + `<button type="button" class="pm-rail-add" data-act="railadd" aria-label="Attach another saved prompt">+ Context</button>`;
   railShown = new Set(selectedIds);
   positionRail();
+  // The tray stands on the chips: when the first appears it rises to make room.
+  if (panelOpen) positionLibrary();
 }
 
 function positionRail() {
@@ -4283,7 +4407,7 @@ function hideCard() {
 // pointer passes on its way to the chat box.
 
 /** What counts as "the page" and not the extension's own surfaces. */
-const PM_SURFACES = "#pm-card, #pm-trigger, #pm-library, #pm-library-btn, #pm-help-btn, #pm-peek, #pm-save, #pm-keys, #pm-caret, #pm-rail, " +
+const PM_SURFACES = "#pm-card, #pm-trigger, #pm-library, #pm-library-btn, #pm-help-btn, #pm-save, #pm-keys, #pm-caret, #pm-rail, " +
   "#pm-tip, #pm-toast-stack, .pm-modal-overlay, .pm-voice-overlay";
 
 function renderStrip() {
