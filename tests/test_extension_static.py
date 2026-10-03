@@ -1510,7 +1510,7 @@ def test_every_listed_chord_is_one_the_code_answers():
     assert '(e.key === "[" || e.key === "]")' in CONTENT_JS
     assert 'e.key === "ArrowRight" && e.target.selectionStart === e.target.value.length' in CONTENT_JS, \
         "the sheet lists → for the whole prompt"
-    assert 'e.key === "ArrowLeft" && libPeek !== null' in CONTENT_JS
+    assert 'e.key === "ArrowLeft" && libDetailOpen' in CONTENT_JS
 
 
 def test_the_library_keys_are_listed_the_way_they_now_work():

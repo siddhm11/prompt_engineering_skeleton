@@ -114,79 +114,89 @@ def main():
                          "You are my writing editor. Cut every sentence that does not earn its place and keep my voice.",
                          "Explain like a teacher", "Bug report triage", "Product spec critic"],
               f"saved prompts listed, an untitled one by its own words, got {rows()}")
-        check(ev("""(() => { const r = document.querySelectorAll('#pm-library .pm-lib-row')[0];
-                     const p = r.querySelector('.pm-lib-preview'); return getComputedStyle(p).webkitLineClamp === '2'
-                       && p.textContent.startsWith('Review this diff'); })()"""), "a named prompt shows two lines of its text")
-        check(ev("""getComputedStyle(document.querySelector('#pm-library .pm-lib-untitled')).webkitLineClamp === '3'"""),
-              "an unnamed one shows three lines of its own words")
-        check(page.inner_text("#pm-library .pm-lib-row >> nth=0").count("#") == 2, "tags show under the words")
-        check("2d ago" in page.inner_text("#pm-library .pm-lib-row >> nth=0 >> .pm-lib-meta"), "and how old the prompt is")
+        check(ev("""(() => { const p = document.querySelectorAll('#pm-library .pm-lib-row')[0].querySelector('.pm-lib-preview');
+                     return getComputedStyle(p).whiteSpace === 'nowrap' && p.textContent.startsWith('Review this diff'); })()"""),
+              "a named prompt shows its name and a line of its text")
+        check(ev("""getComputedStyle(document.querySelector('#pm-library .pm-lib-untitled')).webkitLineClamp === '2'"""),
+              "an unnamed one shows two lines of its own words")
         check(page.locator("#pm-library .pm-lib-row >> nth=1").locator(".pm-lib-preview").count() == 0,
               "an untitled prompt is not split into a made-up title and the rest")
         check(page.get_attribute("#pm-lib-q", "placeholder") == "Search 5 prompts", "placeholder counts prompts")
+
+        # ── a tray on the chat box ──
+        page.wait_for_timeout(200)                # the 150ms open animation scales it
         lib, box, send = rect("#pm-library"), rect("form"), rect(".send")
-        check(not overlaps(lib, send), "the sheet stays off the chat box's send button")
-        check(not overlaps(lib, box), "and off the chat box itself at 1440×900")
-        check(lib["t"] >= 0 and lib["r"] <= 1440, "and inside the window")
+        check(abs(lib["l"] - box["l"]) <= 1 and abs(lib["r"] - box["r"]) <= 1,
+              f"the tray is as wide as the chat box and lines up with it ({lib} vs {box})")
+        check(lib["b"] <= box["t"] and box["t"] - lib["b"] <= 12, "it stands on the chat box's edge, not over it")
+        check(not overlaps(lib, send) and lib["t"] >= 0, "off the Send button, and inside the window")
+        listr, detr = rect("#pm-lib-list"), rect("#pm-lib-detail")
+        check(listr["r"] <= detr["l"] + 1 and detr["r"] - detr["l"] > 300, "two panes: the list, and the prompt beside it")
         check(len(calls("GET", "/saved-prompts")) == 1, "one fetch of saved prompts")
+        tags = [t.strip() for t in page.locator("#pm-library .pm-tray-tags button").all_inner_texts()]
+        check(tags[0] == "All" and "#coding" in tags and "#writing" in tags, f"a row of the user's tags to filter by, got {tags}")
         shot("1-open")
 
-        # ── the whole prompt, beside the sheet ──
-        peek_text = lambda: page.inner_text("#pm-peek") if page.locator("#pm-peek").count() else ""
+        # ── the highlighted prompt, whole, in its pane ──
+        detail = lambda: page.inner_text("#pm-lib-detail")
+        check("Review this diff like a senior engineer" in detail() and "#coding" in detail() and "2d ago" in detail(),
+              "the pane shows the highlighted prompt whole, with its tags and age")
         page.locator("#pm-library .pm-lib-row >> nth=3").hover()
-        page.wait_for_timeout(120)
-        check(page.locator("#pm-peek").count() == 0, "a pointer passing over a row does not open the preview")
-        page.wait_for_selector("#pm-peek", timeout=1500)
-        check("the one log line that would confirm each" in peek_text(), "resting on a row shows the whole prompt")
-        peek, lib = rect("#pm-peek"), rect("#pm-library")
-        check(peek["r"] <= lib["l"], f"beside the sheet, on the side with room ({peek['r']} vs {lib['l']})")
-        check(abs(peek["b"] - lib["b"]) <= 1, "level with the sheet's bottom")
-        shot("1b-peek")
-        page.locator("#pm-library .pm-lib-row >> nth=0").hover()
-        page.wait_for_timeout(150)
-        check("Flag anything that changes behaviour" in peek_text(), "moving to another row moves the preview with it")
-        page.locator("#pm-library .pm-lib-row >> nth=4").hover()        # its words fit, even beside its buttons
-        page.wait_for_timeout(450)
-        check(page.locator("#pm-peek").count() == 0, "a row that shows all its words opens no preview")
-        page.locator("#pm-library .pm-lib-row >> nth=3").hover()
-        page.wait_for_selector("#pm-peek", timeout=1500)
-        page.hover("#pm-peek .pm-peek-body")
-        page.wait_for_timeout(300)
-        check(page.locator("#pm-peek").count() == 1, "crossing the gap into the preview keeps it open")
-        page.click("#pm-peek [data-act='attach']")
-        check(ev("[...selectedIds]") == ["p4"] and "Detach" in peek_text(), "its Attach attaches that prompt, and says Detach")
-        page.click("#pm-peek [data-act='attach']")
-        check(ev("selectedIds.size") == 0, "and detaches it again")
+        page.wait_for_timeout(40)
+        check("Bug report" not in detail(), "a pointer crossing a row on its way somewhere does not change the pane")
+        page.wait_for_timeout(250)
+        check("the one log line that would confirm each" in detail(), "resting on a row shows it in the pane")
         page.mouse.move(300, 150)
-        page.wait_for_timeout(300)
-        check(page.locator("#pm-peek").count() == 0, "leaving both puts it away")
-        check(ev("panelOpen"), "without closing the sheet")
-
-        page.fill("#pm-lib-q", "a")               # a new query puts the highlight back on the first row
-        page.fill("#pm-lib-q", "")
-        page.keyboard.press("ArrowRight")
-        check("correctness first, then naming" in peek_text(), "→ opens the highlighted row's whole prompt")
+        page.focus("#pm-lib-q")
         page.keyboard.press("ArrowDown")
-        check("Cut every sentence" in peek_text() and "Untitled prompt" in peek_text(), "↓ carries it to the next row")
-        page.keyboard.press("ArrowLeft")
-        check(page.locator("#pm-peek").count() == 0, "← puts it away")
-        page.keyboard.press("ArrowRight")
-        page.keyboard.press("Escape")
-        check(page.locator("#pm-peek").count() == 0 and ev("panelOpen"), "esc puts the preview away before the sheet")
-        page.keyboard.type("b")
-        page.keyboard.press("ArrowRight")
-        check(page.locator("#pm-peek").count() == 1, "→ at the end of the query opens it")
-        page.keyboard.press("ArrowLeft")
-        page.keyboard.press("ArrowLeft")
-        page.keyboard.press("ArrowRight")
-        check(page.locator("#pm-peek").count() == 0, "→ inside the query only moves the caret")
-        page.set_viewport_size({"width": 700, "height": 900})
+        check("three decisions it leaves unmade" in detail(), "↓ moves the pane with the highlight")
+        page.click("#pm-lib-detail [data-act='attach']")
+        check(ev("[...selectedIds]") == ["p5"] and "In context" in page.inner_text("#pm-lib-detail [data-act='attach']"),
+              "the pane's Add to context adds it, and says it is in context")
+        page.click("#pm-lib-detail [data-act='attach']")
+        check(ev("selectedIds.size") == 0, "and takes it out again")
+        page.click("#pm-lib-detail [data-act='pin']")
+        groups = [g.strip().lower() for g in page.locator("#pm-library .pm-lib-group").all_inner_texts()]
+        check(rows()[0] == "Product spec critic" and groups == ["pinned", "recent"],
+              f"pinning puts it first, under Pinned, got {rows()[:2]} {groups}")
+        check("three decisions" in detail(), "and the pane stays on it")
+        page.click("#pm-lib-detail [data-act='pin']")
+        check(rows()[0] == "Code review template" and page.locator("#pm-library .pm-lib-group").count() == 0, "unpinning puts it back")
+        page.click("#pm-library .pm-tray-tags button[data-tagfilter='writing']")
+        check(len(rows()) == 1 and rows()[0].startswith("You are my writing editor"), f"a tag filters the list in one click, got {rows()}")
+        page.click("#pm-library .pm-tray-tags button[data-tagfilter='']")
+        check(len(rows()) == 5, "All brings every prompt back")
+
+        # edit, in the pane
+        page.fill("#pm-lib-q", "spec")
+        page.click("#pm-lib-detail [data-act='edit']")
+        page.wait_for_selector("#pm-ed-content")
+        check(page.input_value("#pm-ed-title") == "Product spec critic", "Edit opens the prompt in the pane's editor")
+        page.fill("#pm-ed-content", "Read this spec and list the three decisions it leaves unmade. Be blunt.")
+        page.keyboard.press("Meta+Enter")
+        page.wait_for_function("FAKE_API.calls.some(c => c.method === 'PUT')")
+        put = [c for c in ev("FAKE_API.calls") if c["method"] == "PUT"][-1]
+        check(put["path"] == "/saved-prompts/p5" and put["body"] == {"content": "Read this spec and list the three decisions it leaves unmade. Be blunt."},
+              f"⌘↵ saves only what changed, got {put}")
+        page.wait_for_function("!document.getElementById('pm-ed-content') && document.getElementById('pm-lib-detail').textContent.includes('Be blunt')")
+        check(ev("document.activeElement.id") == "pm-lib-q", "and the pane shows the saved prompt, keyboard back in the search")
         page.fill("#pm-lib-q", "")
+
+        # a narrow window: one pane at a time
+        page.set_viewport_size({"width": 700, "height": 900})
+        page.wait_for_timeout(150)
+        check(page.is_visible("#pm-lib-list") and page.is_hidden("#pm-lib-detail"), "a narrow tray shows the list alone")
+        page.focus("#pm-lib-q")
         page.keyboard.press("ArrowRight")
-        peek = rect("#pm-peek")
-        check(peek["l"] >= 0 and peek["r"] <= 700, f"a narrow window keeps it on screen ({peek['l']}–{peek['r']})")
+        check(page.is_hidden("#pm-lib-list") and page.is_visible("#pm-lib-detail"), "→ opens the prompt in its place")
         page.keyboard.press("Escape")
+        check(page.is_visible("#pm-lib-list") and ev("panelOpen"), "esc goes back to the list before closing")
+        page.click("#pm-library .pm-lib-row >> nth=2 >> .pm-lib-open")
+        check(page.is_visible("#pm-lib-detail") and "Explain the concept" in detail(), "a row's › opens it too")
+        page.click("#pm-lib-detail [data-act='listback']")
+        check(page.is_visible("#pm-lib-list"), "and its ‹ goes back")
         page.set_viewport_size({"width": 1440, "height": 900})
+        page.fill("#pm-lib-q", "a")
         page.fill("#pm-lib-q", "")
 
         # ── ways out, every one of them on screen or in the user's hands ──
@@ -194,6 +204,8 @@ def main():
         check(not ev("panelOpen") and ev("document.activeElement.id") == "composer",
               "× closes the sheet and hands the keyboard back to the chat box")
         open_lib()
+        check(rows()[0] == "Product spec critic", f"a prompt used last time comes first the next time, got {rows()[:2]}")
+        check(ev("JSON.parse(localStorage.getItem('pm')).pm_lib_local.uses.p5") > 0, "kept on this device")
         page.mouse.move(700, 200)
         page.mouse.wheel(0, 200)
         page.wait_for_timeout(100)
@@ -217,7 +229,8 @@ def main():
         ev("closeCard()")
         open_lib()
 
-        # search and keys
+        # search and keys, on the server's order again
+        ev("libUses = {}; libOrderUses = {}; saveLibLocal(); renderLibrary(); focusLibrarySearch()")
         page.keyboard.type("bug")
         check(rows() == ["Bug report triage"], f"search by text, got {rows()}")
         page.fill("#pm-lib-q", "#writ")
@@ -237,14 +250,8 @@ def main():
         page.keyboard.press("Enter")
         check(page.locator("#pm-rail .pm-rail-chip").count() == 1, "↵ attaches: a chip on the rail")
         check(ev("panelOpen"), "and the sheet stays open, so more can be picked")
-        page.locator("#pm-library .pm-lib-row >> nth=3").hover()
-        page.wait_for_selector("#pm-peek", timeout=1500)
-        check(not overlaps(rect("#pm-peek"), rect("#pm-rail")) and not overlaps(rect("#pm-peek"), rect("form")),
-              "the preview stays off the context chips and the chat box")
-        page.mouse.move(300, 150)
-        page.wait_for_timeout(300)
-        page.fill("#pm-lib-q", "a")               # the pointer moved the highlight; put it back on the first row
-        page.fill("#pm-lib-q", "")
+        lib, rail = rect("#pm-library"), rect("#pm-rail")
+        check(lib["b"] <= rail["t"] and not overlaps(lib, rail), f"the tray rises to stand on the chip, so it shows ({lib['b']} vs {rail['t']})")
         check(page.inner_text("#pm-rail .pm-rail-label").strip() == "Context for ⊕", "the rail says what the chips are for")
         check(page.is_visible("#pm-trigger .pm-pill-ctx") and page.inner_text("#pm-trigger .pm-pill-ctx") == "1",
               "⊕ counts the context its next rewrite carries")
@@ -262,7 +269,7 @@ def main():
         # insert into an empty box
         page.keyboard.press("ArrowDown")
         page.keyboard.press("ArrowDown")
-        check(page.inner_text("#pm-library .pm-lib-row.pm-sel .pm-lib-verb").strip() == "Insert", "empty box: Insert")
+        check(page.inner_text("#pm-lib-detail [data-act='insert']").strip() == "Insert", "empty box: the pane offers Insert")
         page.keyboard.press("Meta+Enter")
         page.wait_for_selector("#pm-library", state="hidden")
         # Insert gives the editor a frame to see the selection before clearing.
@@ -276,8 +283,10 @@ def main():
         page.click("#pm-trigger")        # dismiss the Inserted receipt first
         open_lib()
         check(rows()[0].startswith("Save “Turn these meeting notes"), f"the box offered as a Save row, got {rows()[0]!r}")
-        verb = ev("document.querySelectorAll('#pm-library .pm-lib-row')[1].querySelector('.pm-lib-verb').textContent")
-        check(verb == "Replace", f"box has text: Replace, got {verb!r}")
+        page.keyboard.press("ArrowDown")
+        verb = page.inner_text("#pm-lib-detail [data-act='insert']").strip()
+        check(verb == "Replace", f"box has text: the pane offers Replace, got {verb!r}")
+        page.keyboard.press("ArrowUp")
         # ↵ on the Save row opens the save form on it; ↵ again saves
         page.keyboard.press("Enter")
         page.wait_for_selector("#pm-save")
@@ -322,15 +331,11 @@ def main():
 
         # delete, with an inline confirm
         page.fill("#pm-lib-q", "spec")
-        page.hover("#pm-library .pm-lib-row")
-        page.click("#pm-library .pm-lib-row [data-act='more']")
-        page.click("#pm-library [data-act='ask']")
-        check("Delete “Product spec critic”?" in page.inner_text("#pm-library .pm-lib-confirm"), "asks first")
-        page.click("#pm-library [data-act='keepit']")
-        check(rows() == ["Product spec critic"], "Keep keeps it")
-        page.hover("#pm-library .pm-lib-row")
-        page.click("#pm-library .pm-lib-row [data-act='more']")
-        page.click("#pm-library [data-act='ask']")
+        page.click("#pm-lib-detail [data-act='ask']")
+        check("Delete “Product spec critic”?" in page.inner_text("#pm-lib-detail .pm-lib-confirm"), "the pane asks first")
+        page.click("#pm-lib-detail [data-act='keepit']")
+        check(rows() == ["Product spec critic"] and page.locator("#pm-lib-detail .pm-lib-confirm").count() == 0, "Keep keeps it")
+        page.click("#pm-lib-detail [data-act='ask']")
         page.click("#pm-lib-del")
         page.wait_for_function("FAKE_API.calls.some(c => c.method === 'DELETE')")
         page.wait_for_timeout(200)
@@ -359,11 +364,19 @@ def main():
               c.innerHTML = Array.from({ length: 6 }, (_, k) => '<div>line ' + (k + 1) + ' of a long draft in the chat box</div>').join('');""")
         page.wait_for_timeout(100)
         open_lib()
+        page.wait_for_timeout(200)
         lib, send, box = rect("#pm-library"), rect(".send"), rect("form")
-        check(lib["b"] - lib["t"] >= 400, f"the sheet keeps its height beside a tall centred box, got {lib['b'] - lib['t']:.0f}px")
-        check(not overlaps(lib, send), "and still stays off the Send button")
-        check(lib["t"] >= 0, "and inside the window")
+        check(lib["b"] - lib["t"] >= 330 and lib["b"] <= box["t"], f"with room above a centred box the tray stands on it, got {lib}")
         page.keyboard.press("Escape")
+        page.set_viewport_size({"width": 1440, "height": 760})   # now there is not
+        open_lib()
+        page.wait_for_timeout(200)
+        lib, send, box = rect("#pm-library"), rect(".send"), rect("form")
+        check(ev("document.getElementById('pm-library').dataset.overBox") == "true" and lib["b"] - lib["t"] >= 400,
+              f"without it, the tray comes down over the box's text to keep its height, got {lib['b'] - lib['t']:.0f}px")
+        check(not overlaps(lib, send) and lib["t"] >= 0, "but never over Send, and inside the window")
+        page.keyboard.press("Escape")
+        page.set_viewport_size({"width": 1440, "height": 900})
         ev("document.body.classList.remove('center'); document.getElementById('composer').textContent = ''")
         page.wait_for_timeout(100)
 
@@ -379,7 +392,8 @@ def main():
         check(tip["b"] <= btn["t"], "above the control, not over it")
         check(page.get_attribute("#pm-lib-close", "title") is None, "and no native tooltip doubles it")
         page.hover("#pm-library .pm-lib-row[aria-checked] >> nth=0")     # a saved prompt, not the Save row
-        page.hover("#pm-library .pm-lib-row[aria-checked] >> nth=0 >> [data-act='insert']")
+        page.wait_for_timeout(250)                                         # rests: the pane follows
+        page.hover("#pm-lib-detail [data-act='insert']")
         page.wait_for_timeout(80)
         check(page.locator("#pm-keytip:not([hidden])").count() == 1 and "into the chat box" in page.inner_text("#pm-keytip"),
               "moving to the next control while warm shows its tip at once")
