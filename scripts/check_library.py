@@ -303,46 +303,47 @@ def main():
         page.wait_for_function("document.getElementById('pm-trigger').dataset.state === 'applied'", timeout=3000)
         check(True, "the pill says Inserted once the write is verified")
 
-        # a half-written box: Replace, and the Save row
+        # a half-written box: Replace, and + New starts from it
         set_box("Turn these meeting notes into action items with owners")
         page.click("#pm-trigger")        # dismiss the Inserted receipt first
         open_lib()
-        check(rows()[0].startswith("Save “Turn these meeting notes"), f"the box offered as a Save row, got {rows()[0]!r}")
-        page.keyboard.press("ArrowDown")
+        check(not any(r.startswith("Save “") for r in rows()) and len(rows()) == 5,
+              f"the Saved list is saved prompts only, no Save row for the box, got {rows()[:2]}")
         verb = page.inner_text("#pm-lib-detail [data-act='insert']").strip()
         check(verb == "Replace", f"box has text: the pane offers Replace, got {verb!r}")
-        page.keyboard.press("ArrowUp")
-        # ↵ on the Save row opens the save form on it; ↵ again saves
-        page.keyboard.press("Enter")
-        page.wait_for_selector("#pm-save")
-        check(ev("document.activeElement.id") == "pm-save-title", "the form opens with its name field focused")
-        check(page.input_value("#pm-save-title") == "", "the name starts empty: an unnamed prompt shows its words")
-        check("Turn these meeting notes" in page.inner_text("#pm-save .pm-save-snip"), "the form shows what it will save")
-        check(ev("panelOpen"), "and the sheet stays open under it")
-        tags = [t.strip() for t in page.locator("#pm-save-tags button").all_inner_texts()]
-        check("#coding" in tags and "#writing" in tags, f"the user's own tags are one click away, got {tags}")
-        page.click("#pm-save-tags button[data-tag='writing']")
-        check(page.get_attribute("#pm-save-tags button[data-tag='writing']", "aria-pressed") == "true", "a click picks a tag")
-        page.fill("#pm-save-newtags", "meetings, #notes")
-        shot("5-save-form")
-        page.focus("#pm-save-title")
-        check(ev("panelOpen") and page.locator("#pm-save").count() == 1, "working in the form leaves the sheet open")
-        page.keyboard.press("Enter")
+        views = [b.strip() for b in page.locator("#pm-library .pm-lib-views button").all_inner_texts()]
+        check(views == ["Saved", "History", "+ New"], f"the head offers Saved | History | + New, got {views}")
+        page.click("#pm-lib-new")
+        page.wait_for_selector("#pm-ed-content")
+        check(page.get_attribute("#pm-lib-new", "aria-pressed") == "true"
+              and page.get_attribute("#pm-lib-view-saved", "aria-pressed") == "false", "+ New shows as the tab in use")
+        check(page.inner_text("#pm-lib-detail .pm-detail-title") == "New prompt", "the editor opens in the pane as a new prompt")
+        check(page.is_visible("#pm-lib-list"), "beside the saved ones")
+        check(page.input_value("#pm-ed-content") == "Turn these meeting notes into action items with owners",
+              "starting from what is in the chat box")
+        check(ev("document.activeElement.id") == "pm-ed-content"
+              and ev("document.activeElement.selectionStart") == len("Turn these meeting notes into action items with owners"),
+              "with the caret at the end of it")
+        check(page.input_value("#pm-ed-title") == "", "the name starts empty: an unnamed prompt shows its words")
+        page.fill("#pm-ed-tags", "meetings, #notes, writing")
+        shot("5-new-prompt")
+        page.focus("#pm-ed-content")
+        page.keyboard.press("Meta+Enter")
         page.wait_for_function("FAKE_API.calls.some(c => c.method === 'POST' && c.path === '/saved-prompts')")
         post = calls("POST", "/saved-prompts")[-1]["body"]
-        check("title" not in post and sorted(post.get("tags", [])) == ["meetings", "notes", "writing"],
-              f"saved unnamed, with the picked and typed tags, got {post}")
-        page.wait_for_selector("#pm-save", state="detached", timeout=3000)
-        check(True, "the form goes once the server says yes")
-        page.wait_for_function("!document.querySelector('#pm-library .pm-lib-row-save') && "
+        check(not post.get("title") and post["content"] == "Turn these meeting notes into action items with owners"
+              and sorted(post.get("tags", [])) == ["meetings", "notes", "writing"],
+              f"⌘↵ saves it unnamed, with its tags, got {post}")
+        page.wait_for_function("!document.getElementById('pm-ed-content') && "
                                "document.querySelectorAll('#pm-library .pm-lib-row').length === 6")
+        check(ev("document.activeElement.id") == "pm-lib-q", "the keyboard goes back to the search")
         check("Undo" in page.inner_text(".pm-toast"), "the toast offers Undo")
         toast = rect(".pm-toast")
         for what, sel in (("the context chips", "#pm-rail"), ("the chat box", "form"), ("the open library", "#pm-library")):
             check(not overlaps(toast, rect(sel)), f"the toast stays off {what}")
         check(toast["r"] >= 1440 - 60, "and sits on the pill's side of the window")
         check("Turn these meeting notes" in rows()[0], f"saved and listed first, got {rows()[:2]}")
-        check(not any(r.startswith("Save “") for r in rows()), "the Save row goes once saved")
+        check("Turn these meeting notes" in page.inner_text("#pm-lib-detail"), "and shown in the pane")
         check("Rewrite with it" in page.inner_text("#pm-lib-foot"), "with text in the box, the foot offers the rewrite")
         # The harness routes rewrites to its fake direct path; that the ticked
         # ids ride with a server rewrite is checked in check_extension_e2e.py.
@@ -369,13 +370,33 @@ def main():
         page.fill("#pm-lib-q", "")
 
         # History (it was "Recent", which read as "recently saved")
-        check([t.strip() for t in page.locator("#pm-library .pm-lib-views button").all_inner_texts()] == ["Saved", "History"],
+        check([t.strip() for t in page.locator("#pm-library .pm-lib-views button[data-view]").all_inner_texts()] == ["Saved", "History"],
               "the two lists are Saved and History")
         page.click("#pm-lib-view-recent")
         page.wait_for_function("document.querySelectorAll('#pm-library .pm-lib-row').length === 2")
         check(page.get_attribute("#pm-lib-q", "placeholder") == "Search your rewrite history", "History says what it holds")
         check(rows()[0].startswith("Show me how to sort"), f"past rewrites listed, got {rows()}")
         check("from “hw do i sort" in page.inner_text("#pm-library .pm-lib-row .pm-lib-preview"), "with what they came from")
+        # + New from History: back to Saved, where the prompt will land
+        page.click("#pm-lib-new")
+        page.wait_for_selector("#pm-ed-content")
+        check(page.get_attribute("#pm-lib-view-saved", "aria-pressed") == "false" and ev("libView") == "saved"
+              and len(rows()) == ev("savedPrompts.length"), f"+ New from History opens beside the saved prompts, got {page.get_attribute('#pm-lib-view-saved', 'aria-pressed')} {ev('libView')} {len(rows())}")
+        check(page.input_value("#pm-ed-content") == composer().strip(), "starting from the chat box, as before")
+        page.keyboard.press("Escape")
+        check(ev("libPage") == "list" and page.locator("#pm-ed-content").count() == 0 and ev("panelOpen"),
+              "esc puts the new prompt away, and the tray stays")
+        check(not calls("POST", "/saved-prompts")[1:], "without saving anything")
+        page.set_viewport_size({"width": 700, "height": 900})
+        page.wait_for_timeout(150)
+        page.click("#pm-lib-new")
+        page.wait_for_selector("#pm-ed-content")
+        check(page.is_hidden("#pm-lib-list") and page.is_visible("#pm-ed-content"), "a narrow tray gives the new prompt the whole tray")
+        page.click("#pm-lib-detail [data-act='edcancel']")
+        check(page.is_visible("#pm-lib-list"), "and Cancel brings the list back")
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.click("#pm-lib-view-recent")
+        page.wait_for_function("document.querySelectorAll('#pm-library .pm-lib-row').length === 2")
         page.keyboard.press("Enter")
         page.wait_for_selector("#pm-library", state="hidden")
         page.wait_for_function("document.getElementById('composer').textContent.startsWith('Show me how to sort')", timeout=3000)
@@ -493,7 +514,7 @@ def main():
         tip, btn = rect("#pm-keytip"), rect("#pm-lib-close")
         check(tip["b"] <= btn["t"], "above the control, not over it")
         check(page.get_attribute("#pm-lib-close", "title") is None, "and no native tooltip doubles it")
-        page.hover("#pm-library .pm-lib-row[aria-checked] >> nth=0")     # a saved prompt, not the Save row
+        page.hover("#pm-library .pm-lib-row[aria-checked] >> nth=0")
         page.wait_for_timeout(250)                                         # rests: the pane follows
         page.hover("#pm-lib-detail [data-act='insert']")
         page.wait_for_timeout(80)
