@@ -1500,7 +1500,8 @@ let libConfirm = null;        // a saved prompt awaiting "Delete?"
 let libSignedIn = false;      // kept current from storage; // needs it synchronously
 let libHistoryLoaded = false;
 let libTag = "";              // the tag filter row: "" for every tag
-let libEditId = null;         // libPage "edit": the saved prompt in the editor
+let libEditId = null;         // libPage "edit": the saved prompt in the editor, or "new"
+let libNewDraft = "";         // what a new prompt starts as: the chat box's draft
 let libDetailOpen = false;    // a narrow tray shows one pane: the list, or this prompt
 let libHoverTimer = null;
 const TRAY_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"]);
@@ -1936,15 +1937,10 @@ function libraryItems() {
   const pinned = matched.filter((p) => libPins.has(p.id));
   const rest = matched.filter((p) => !libPins.has(p.id)).map((p, k) => [p, k])
     .sort((a, b) => used(b[0]) - used(a[0]) || a[1] - b[1]).map(([p]) => p);
-  const list = [...pinned, ...rest].map((p) => ({ kind: "saved", p, pinned: libPins.has(p.id) }));
-  // What is in the chat box, offered as the first row when it is not already
-  // saved. This is the whole of the old Save tab: title and tags were optional
-  // there, and are one Edit away here.
-  const text = norm(getCurrentInputText());
-  if (!q && promptsLoaded && text.length >= 3 && !savedPrompts.some((p) => norm(p.content) === text)) {
-    list.unshift({ kind: "save", text });
-  }
-  return list;
+  // Saved prompts only. What is in the chat box used to lead the list as a
+  // "Save …" row, there only when the box had text; + New in the head is
+  // the one way to write a prompt here now, with or without a draft.
+  return [...pinned, ...rest].map((p) => ({ kind: "saved", p, pinned: libPins.has(p.id) }));
 }
 
 function libVerb() {
@@ -2043,17 +2039,19 @@ function libHeadHtml() {
     return `<div class="pm-lib-head pm-lib-head-sub"><span class="pm-lib-head-title pm-lib-head-plain">Library</span>${more}</div>`;
   }
   const count = libView === "saved" ? savedPrompts.length : enhanceHistory.length;
+  const writingNew = libPage === "edit" && libEditId === "new";
   const placeholder = libView === "saved"
-    // Short enough to fit beside Saved | History, ⋯ and × in a 368px sheet.
-    ? (count ? `Search ${count} prompt${count === 1 ? "" : "s"}` : "Search saved prompts")
+    // Short enough to fit beside Saved | History | + New, ⋯ and × in a 368px sheet.
+    ? (count ? `Search ${count} prompt${count === 1 ? "" : "s"}` : "Search prompts")
     : "Search your rewrite history";
   return `<div class="pm-lib-head">` +
     `<label class="pm-lib-search">${LIB_ICON.search}` +
     `<input id="pm-lib-q" type="text" autocomplete="off" spellcheck="false" placeholder="${placeholder}" value="${escHtml(searchQuery)}"` +
     ` aria-label="Search the library" role="combobox" aria-expanded="true" aria-controls="pm-lib-list" aria-autocomplete="list"></label>` +
     `<div class="pm-lib-views" role="group" aria-label="Show">` +
-    `<button type="button" id="pm-lib-view-saved" data-view="saved" aria-pressed="${libView === "saved"}" title="Prompts you chose to keep">Saved</button>` +
-    `<button type="button" id="pm-lib-view-recent" data-view="recent" aria-pressed="${libView === "recent"}" title="Every rewrite you have made">History</button></div>` +
+    `<button type="button" id="pm-lib-view-saved" data-view="saved" aria-pressed="${!writingNew && libView === "saved"}" title="Prompts you chose to keep">Saved</button>` +
+    `<button type="button" id="pm-lib-view-recent" data-view="recent" aria-pressed="${!writingNew && libView === "recent"}" title="Every rewrite you have made">History</button>` +
+    `<button type="button" id="pm-lib-new" data-act="new" aria-pressed="${writingNew}" title="Write a new prompt and save it">+ New</button></div>` +
     more + `</div>` + libTagsHtml();
 }
 
@@ -2115,11 +2113,6 @@ function libDetailHtml() {
   if (!it) return "";
   const verb = libVerb();
   const btn = (act, label, cls = "", extra = "") => `<button type="button" class="pm-lib-verb${cls}" data-act="${act}"${extra}>${label}</button>`;
-  if (it.kind === "save") {
-    return `<div class="pm-detail-head"><div class="pm-detail-title">From the chat box</div></div>` +
-      `<div class="pm-detail-text">${escHtml(it.text)}</div>` +
-      `<div class="pm-detail-acts">${btn("save", "Save to library")}</div>`;
-  }
   if (it.kind === "recent") {
     const h = it.h;
     return `<div class="pm-detail-head"><div class="pm-detail-title">Rewrite</div>` +
@@ -2150,7 +2143,7 @@ function libDetailHtml() {
 
 /** Edit a saved prompt where it is shown: name, words, tags. */
 function libEditorHtml() {
-  const p = savedPrompts.find((x) => x.id === libEditId) || { title: "", content: "", tags: [] };
+  const p = savedPrompts.find((x) => x.id === libEditId) || { title: "", content: libNewDraft, tags: [] };
   return `<div class="pm-detail-head"><div class="pm-detail-title">${libEditId === "new" ? "New prompt" : "Edit prompt"}</div></div>` +
     `<label class="pm-editor-field"><span>Name</span><input id="pm-ed-title" class="pm-lib-input" type="text" autocomplete="off" maxlength="120" value="${escHtml(p.title || "")}" placeholder="What you will look for it by"></label>` +
     `<label class="pm-editor-field pm-editor-grow"><span>Prompt</span><textarea id="pm-ed-content" class="pm-lib-input" placeholder="Write it once, well. Use {curly braces} for the parts that change each time.">${escHtml(p.content || "")}</textarea></label>` +
@@ -2171,7 +2164,7 @@ function libRowsHtml() {
     const q = searchQuery.trim();
     if (q || libTag) return `<div class="pm-lib-empty"><b>Nothing matches${q ? ` “${escHtml(q)}”` : ` #${escHtml(libTag)}`}</b>Search looks at names, text and tags. Start with # to match a tag.</div>`;
     if (libView === "recent") return `<div class="pm-lib-empty"><b>No history yet</b>Every rewrite you make with ⊕ shows up here. Save the ones worth keeping.</div>`;
-    return `<div class="pm-lib-empty"><b>Your library is empty</b>${CMD_KEY}S saves a rewrite from its card.</div>`;
+    return `<div class="pm-lib-empty"><b>Your library is empty</b>Write one with + New, or press ${CMD_KEY}S on a rewrite's card.</div>`;
   }
   const grouped = libView === "saved" && !searchQuery.trim() && list.some((it) => it.pinned);
   const open = `<button type="button" class="pm-lib-icon pm-lib-open" data-act="open" tabindex="-1" aria-label="Open">${LIB_ICON.chevron}</button>`;
@@ -2180,11 +2173,6 @@ function libRowsHtml() {
     const id = `pm-lib-row-${i}`;
     const head = grouped && (i === 0 || (!it.pinned && list[i - 1].pinned))
       ? `<div class="pm-lib-group" role="presentation">${it.pinned ? "Pinned" : "Recent"}</div>` : "";
-    if (it.kind === "save") {
-      return `<div class="pm-lib-row pm-lib-row-save${sel}" id="${id}" data-i="${i}" role="option" aria-selected="${Boolean(sel)}">` +
-        `<span class="pm-lib-dot" aria-hidden="true">+</span><div class="pm-lib-text"><div class="pm-lib-title">Save “${escHtml(it.text.slice(0, 44))}${it.text.length > 44 ? "…" : ""}”</div>` +
-        `<div class="pm-lib-preview">From the chat box</div></div></div>`;
-    }
     if (it.kind === "recent") {
       const h = it.h;
       const ago = h.timestamp ? getTimeAgo(h.timestamp) : "";
@@ -2603,17 +2591,13 @@ function libAct(act, i) {
   // several can be picked in a row; putting its text in the chat box is the
   // row's Insert button, or ⌘↵. A past rewrite cannot be context (the server
   // looks context up among saved prompts), so its row still inserts.
-  if (act === "primary") act = it?.kind === "saved" ? "attach" : it?.kind === "save" ? "save" : "insert";
+  if (act === "primary") act = it?.kind === "saved" ? "attach" : "insert";
   switch (act) {
     case "insert":
       if (!it) return;
-      if (it.kind === "save") { libSaveText(it.text, libRowEl(i)); return; }
       if (it.kind === "recent") { libInsert(it.h.enhanced, it.h.log_id); return; }
       recordUse(it.p.id);
       libInsert(it.p.content);
-      return;
-    case "save":
-      if (it?.kind === "save") libSaveText(it.text, libRowEl(i));
       return;
     case "attach":
       if (it?.kind !== "saved") return;
@@ -2714,6 +2698,7 @@ function onLibraryClick(e) {
     case "clear": clearAttachments(); return;
     case "rewrite": closeLibrary(); handleEnhance(); return;
     case "listback": libDetailOpen = false; renderLibrary(); focusLibrarySearch(); return;
+    case "new": openNewPrompt(); return;
     case "edsave": saveEditor(); return;
     case "edcancel": closeEditor(); return;
     case "sendfeedback": sendLibraryFeedback(); return;
@@ -2817,6 +2802,21 @@ function openEditor(id) {
   libConfirm = null;
   renderLibrary();
   document.getElementById(id === "new" ? "pm-ed-content" : "pm-ed-title")?.focus({ preventScroll: true });
+}
+
+/**
+ * + New: a blank prompt in the editor, beside the saved ones. A draft in the
+ * chat box starts it off, since that is usually what the user wants to keep;
+ * anything else is typed. The list goes back to Saved, where it will land.
+ */
+function openNewPrompt() {
+  libNewDraft = String(getCurrentInputText() || "").trim();
+  if (libView !== "saved") { libView = "saved"; libSel = 0; }
+  libMenu = false;
+  libDetailOpen = false;
+  openEditor("new");
+  const ed = document.getElementById("pm-ed-content");
+  ed?.setSelectionRange(ed.value.length, ed.value.length);
 }
 
 function closeEditor() {

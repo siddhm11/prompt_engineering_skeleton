@@ -2054,6 +2054,8 @@
 }
 .pm-lib .pm-lib-views button:hover { color: var(--pm-con-text); }
 .pm-lib .pm-lib-views button[aria-pressed="true"] { background: var(--pm-con-elev); color: var(--pm-con-text); }
+/* + New writes rather than shows: drawn in the accent, like the other ways to add. */
+.pm-lib .pm-lib-views #pm-lib-new { color: var(--pm-accent); }
 .pm-lib .pm-lib-views-wide { display: flex; }
 .pm-lib .pm-lib-views-wide button { flex: 1; }
 
@@ -2103,15 +2105,6 @@
 .pm-lib .pm-lib-row.pm-sel { background: var(--pm-con-hover); }
 .pm-lib .pm-lib-dot { justify-self: center; width: 6px; height: 6px; border-radius: 50%; }
 .pm-lib .pm-lib-row.pm-att .pm-lib-dot { background: var(--pm-accent); }
-.pm-lib .pm-lib-row-save .pm-lib-dot {
-    width: auto;
-    height: auto;
-    background: none;
-    color: var(--pm-accent);
-    font-size: 14px;
-    line-height: 1;
-}
-.pm-lib .pm-lib-row-save .pm-lib-title { color: var(--pm-accent); }
 
 .pm-lib .pm-lib-text, .pm-caret .pm-lib-text { min-width: 0; }
 .pm-lib .pm-lib-title, .pm-caret .pm-lib-title {
@@ -2139,8 +2132,6 @@
    stay on the first line however tall the row grows. */
 .pm-lib .pm-lib-row { align-items: start; }
 .pm-lib .pm-lib-row .pm-lib-dot { margin-top: 6px; }
-.pm-lib .pm-lib-row-save, .pm-lib .pm-lib-row-save .pm-lib-acts { align-items: center; }
-.pm-lib .pm-lib-row-save .pm-lib-dot { align-self: center; margin-top: 0; }
 .pm-lib .pm-lib-clamp, .pm-lib .pm-lib-untitled {
     display: -webkit-box;
     -webkit-box-orient: vertical;
