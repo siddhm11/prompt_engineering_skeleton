@@ -2485,6 +2485,9 @@
     font-size: 11.5px;
 }
 .pm-lib .pm-lib-hints { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+/* Beside what is in context, set apart from it; a one-pane tray has no room for both. */
+.pm-lib .pm-lib-hints-also { padding-left: 10px; border-left: 1px solid var(--pm-con-border); }
+.pm-lib.pm-tray-one .pm-lib-hints-also { display: none; }
 .pm-lib kbd {
     margin-right: 4px;
     padding: 1px 4px;
