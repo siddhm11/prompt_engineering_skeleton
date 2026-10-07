@@ -1684,6 +1684,7 @@ function togglePanel(force) {
   }
   // The pill folds to ⊕ while the sheet is up, and the sheet hangs off it.
   placePill();
+  positionRail();
 }
 
 /** The chip, "?" and the ⋯ menu all come here: the keyboard map. See openKeyMap(). */
@@ -1749,6 +1750,8 @@ const LIB_ROOM_WANTED = 420;   // px above the chat box before the sheet may com
 const TRAY_MIN = 520, TRAY_MAX = 880;   // the tray's width, from the chat box's
 const TRAY_TWO_PANES = 600;             // narrower than this, one pane at a time
 const TRAY_ROOM_WANTED = 340;           // px above the box before the tray may come down over its text
+const RAIL_GAP = 6, RAIL_ROW = 26;      // the chips' row: its gap above the box, and its height
+const RAIL_SLOT = RAIL_GAP + RAIL_ROW;
 
 /**
  * Where the library goes: a tray on the chat box.
@@ -1771,10 +1774,13 @@ function positionLibrary() {
   lib.classList.add("pm-tray");
   const width = Math.round(Math.min(vw - 2 * m, Math.max(TRAY_MIN, Math.min(TRAY_MAX, frame.width))));
   const left = Math.round(Math.max(m, Math.min(frame.left + (frame.width - width) / 2, vw - width - m)));
-  let floor = frame.top - gap;
-  const rail = document.getElementById("pm-rail");
-  const rr = rail && !rail.hidden ? rail.getBoundingClientRect() : null;
-  if (rr && rr.width && rr.bottom <= frame.top + 2) floor = Math.min(floor, rr.top - gap);
+  // The tray stands on the row the context chips land on, whether or not any
+  // are there yet. It used to stand on the chips themselves, so each one that
+  // wrapped them onto another row pushed the tray up, and on a centred box,
+  // with the window's top already reached, made it shorter: picking a second
+  // or third prompt shrank the list being picked from. While the tray is
+  // open the chips keep to that one row (see fitRailToOneRow).
+  let floor = frame.top - RAIL_SLOT - gap;
   lib.dataset.overBox = "false";
   if (floor - m < TRAY_ROOM_WANTED) {
     const controls = composerControlsTop(composer);
@@ -3190,7 +3196,7 @@ function positionRail() {
   rail.hidden = hide;
   if (hide) return;
   rail.style.left = Math.max(8, Math.round(r.left)) + "px";
-  rail.style.bottom = Math.round(window.innerHeight - r.top + 6) + "px";
+  rail.style.bottom = Math.round(window.innerHeight - r.top + RAIL_GAP) + "px";
   let maxWidth = Math.max(180, Math.round(r.width));
   // The pill steps up onto the box's top corner when it would sit on the box
   // (a draft makes it wide), which is this same row: on Claude the chips ran
@@ -3200,6 +3206,34 @@ function positionRail() {
     maxWidth = Math.min(maxWidth, Math.max(180, Math.round(pill.left - r.left - 8)));
   }
   rail.style.maxWidth = maxWidth + "px";
+  fitRailToOneRow(rail);
+}
+
+/**
+ * While the tray is open the chips keep to the one row it leaves them, the
+ * oldest folding into a "+2" chip; wrapping upward ran them under the tray.
+ * The newest stays in view: it is the one the user just watched land.
+ */
+function fitRailToOneRow(rail) {
+  const chips = [...rail.querySelectorAll(".pm-rail-chip")];
+  chips.forEach((c) => { c.hidden = false; });
+  rail.querySelector(".pm-rail-more")?.remove();
+  rail.classList.toggle("pm-rail-one", panelOpen);
+  if (!panelOpen) return;
+  const max = parseFloat(rail.style.maxWidth) || Infinity;
+  let folded = 0;
+  while (rail.scrollWidth > max + 1 && folded < chips.length - 1) {
+    chips[folded].hidden = true;
+    folded++;
+    let more = rail.querySelector(".pm-rail-more");
+    if (!more) {
+      more = document.createElement("span");
+      more.className = "pm-rail-more";
+      rail.insertBefore(more, chips[0]);
+    }
+    more.textContent = "+" + folded;
+    more.title = chips.slice(0, folded).map((c) => c.textContent.trim()).join(", ");
+  }
 }
 
 // ── // in the chat box ──
