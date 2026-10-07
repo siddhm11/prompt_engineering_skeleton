@@ -1505,6 +1505,10 @@ let libNewDraft = "";         // what a new prompt starts as: the chat box's dra
 let libDetailOpen = false;    // a narrow tray shows one pane: the list, or this prompt
 let libHoverTimer = null;
 const TRAY_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"]);
+// One turn of the wheel arrives as a train of events, then the coast after
+// it; the first decides for the rest (see trayTakesWheel).
+let trayWheel = { at: -Infinity, takes: false, sum: 0 };
+const TRAY_WHEEL_CLOSES = 40;   // px of a turn over the tray, with nothing in it to scroll, that closes it
 const LIB_HOVER_MS = 140;
 // Pins and when each prompt was last used, kept on this device: the server
 // knows neither, and both only decide the order the list is shown in.
@@ -1607,13 +1611,26 @@ function createLibrary() {
       preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation(),
     });
   });
-  // So does turning the wheel over the conversation: the sheet is fixed to
-  // the pill and would float over messages the user is trying to read.
+  // So does scrolling the page: the user has gone back to the conversation.
   // Wheel, not scroll, because only a wheel is the user; a scroll event also
   // comes from the host's own auto-scroll as an answer streams in.
+  //
+  // Except a wheel turned over the tray itself, which is where the pointer
+  // usually is: the tray covers most of the conversation. Over its head, its
+  // tags, its foot or a list too short to scroll, nothing took the turn, and
+  // the tray is not inside the host's scroller, so nothing moved at all:
+  // "scroll should close it, but it doesn't". A deliberate turn the tray
+  // cannot use now closes it, as one over the page does. One that scrolls the
+  // list or the pane is the tray's, to its end and through the coast after
+  // (see trayTakesWheel), and a graze of a trackpad is not a turn.
   document.addEventListener("wheel", (e) => {
     if (!panelOpen) return;
-    if (e.target.closest?.("#pm-library, #pm-save, #pm-keys, .pm-modal-overlay, #pm-toast-stack")) return;
+    if (e.target.closest?.("#pm-save, #pm-keys, .pm-modal-overlay, #pm-toast-stack")) return;
+    if (e.target.closest?.("#pm-library")) {
+      if (trayTakesWheel(e)) return;
+      trayWheel.sum += Math.abs(e.deltaX) + Math.abs(e.deltaY);
+      if (trayWheel.sum < TRAY_WHEEL_CLOSES) return;
+    }
     togglePanel(false);
   }, { capture: true, passive: true });
 
@@ -1783,6 +1800,33 @@ function keepTrayKeyboard() {
   if (String(window.getSelection?.() || "")) return;
   const q = libPage === "list" && document.getElementById("pm-lib-q");
   (q || document.getElementById("pm-library"))?.focus({ preventScroll: true });
+}
+
+/**
+ * Does something in the tray scroll with this wheel event, or would it
+ * scroll the page beneath? Walks out from the pointer to the tray: the first
+ * box with room to scroll that way takes it, and one at its end that keeps
+ * its scroll to itself (overscroll-behavior: contain, as the list and the pane
+ * do) swallows it. Decided at the start of a gesture and kept for its events,
+ * so a list flung to its end does not close the tray as it coasts.
+ */
+function trayTakesWheel(e) {
+  if (e.timeStamp - trayWheel.at < 160) { trayWheel.at = e.timeStamp; return trayWheel.takes; }
+  const lib = document.getElementById("pm-library");
+  const across = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+  const d = across ? e.deltaX : e.deltaY;
+  let takes = false;
+  for (let el = e.target; el && el !== lib.parentNode; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const scrolls = /(auto|scroll)/.test(across ? cs.overflowX : cs.overflowY);
+    const size = across ? el.scrollWidth - el.clientWidth : el.scrollHeight - el.clientHeight;
+    if (!scrolls || size <= 1) continue;
+    const pos = across ? el.scrollLeft : el.scrollTop;
+    if (d > 0 ? pos < size - 1 : pos > 0) { takes = true; break; }
+    if ((across ? cs.overscrollBehaviorX : cs.overscrollBehaviorY) !== "auto") { takes = true; break; }
+  }
+  trayWheel = { at: e.timeStamp, takes, sum: 0 };
+  return takes;
 }
 
 /** Close the sheet and hand the keyboard back to the chat box. */
