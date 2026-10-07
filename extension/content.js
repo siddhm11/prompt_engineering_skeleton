@@ -79,6 +79,12 @@ const CMD_KEY = IS_MAC ? "⌘" : "Ctrl+";
 // Mac writes chords as glyphs, Windows and Linux spell them out. CMD_KEY
 // alone renders "Ctrl+⇧E" off-platform, which is neither convention.
 const MOD_SHIFT = IS_MAC ? "⌘⇧" : "Ctrl+Shift+";
+// The same goes for the keys themselves. ↵ and ⇥ are what a Mac keyboard and
+// its menus print; on Windows the keycap says Enter and Tab, and "Ctrl+↵" was
+// half of each convention.
+const ENTER_KEY = IS_MAC ? "↵" : "Enter";
+const TAB_KEY = IS_MAC ? "⇥" : "Tab";
+const CMD_ENTER = CMD_KEY + ENTER_KEY;
 
 /**
  * Every shortcut this extension answers, grouped by WHERE it works.
@@ -109,7 +115,7 @@ const SHORTCUTS = () => [
       ? [
           { keys: ["//"], what: "Open your saved prompts at the cursor" },
           { keys: ["↑", "↓"], what: "Move through them" },
-          { keys: ["↵"], what: "Insert the one you picked" },
+          { keys: [ENTER_KEY], what: "Insert the one you picked" },
           { keys: ["Tab"], what: "Attach it as context instead" },
           { keys: ["Esc"], what: "Close the list" },
         ]
@@ -125,7 +131,7 @@ const SHORTCUTS = () => [
   {
     where: "On the card",
     rows: [
-      { keys: [`${CMD_KEY}↵`], what: "Rewrite it again" },
+      { keys: [CMD_ENTER], what: "Rewrite it again" },
       { keys: [`${CMD_KEY}S`], what: "Save the rewrite to your library" },
       { keys: ["[", "]"], what: "Step through versions", note: "once there is more than one" },
     ],
@@ -135,8 +141,8 @@ const SHORTCUTS = () => [
     rows: [
       { keys: ["↑", "↓"], what: "Move through the list" },
       { keys: ["→"], what: "Go to the prompt's pane", note: "← comes back" },
-      { keys: ["↵"], what: "Add it to context, or take it out", note: "a click does the same" },
-      { keys: [`${CMD_KEY}↵`], what: "Insert it into the chat box" },
+      { keys: [ENTER_KEY], what: "Add it to context, or take it out", note: "a click does the same" },
+      { keys: [CMD_ENTER], what: "Insert it into the chat box" },
       { keys: ["Esc"], what: "Go back, then close" },
     ],
   },
@@ -1998,7 +2004,7 @@ function libDetailHtml() {
     return `<div class="pm-detail-head"><div class="pm-detail-title">Rewrite</div>` +
       `<div class="pm-lib-meta">${escHtml(STYLE_NAMES[h.mode] || "")}${h.timestamp ? `<span>${escHtml(getTimeAgo(h.timestamp))}</span>` : ""}</div></div>` +
       `<div class="pm-detail-text">${escHtml(h.enhanced)}<div class="pm-detail-from"><span>Rewritten from</span>${escHtml(h.original)}</div></div>` +
-      `<div class="pm-detail-acts">${btn("insert", verb, "", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_KEY}↵"`)}` +
+      `<div class="pm-detail-acts">${btn("insert", verb, "", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_ENTER}"`)}` +
       `${btn("keep", "Save to library", " pm-lib-verb-quiet")}${btn("copy", "Copy", " pm-lib-verb-quiet")}</div>`;
   }
   const p = it.p;
@@ -2008,8 +2014,8 @@ function libDetailHtml() {
   const acts = libConfirm === p.id
     ? `<div class="pm-lib-confirm" role="alertdialog" aria-label="Delete this prompt?"><span>Delete “${escHtml(promptTitle(p))}”?</span>` +
       `<button type="button" data-act="keepit">Keep</button><button type="button" class="pm-lib-danger" data-act="del" id="pm-lib-del">Delete</button></div>`
-    : btn("attach", att ? "In context ✓" : "Add to context", att ? " pm-lib-verb-on" : "", ` aria-pressed="${att}" data-pm-tip="${att ? "Take it out of context" : "Add to context for your next message or rewrite"}" data-pm-key="↵"`) +
-      btn("insert", verb, " pm-lib-verb-quiet", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_KEY}↵"`) +
+    : btn("attach", att ? "In context ✓" : "Add to context", att ? " pm-lib-verb-on" : "", ` aria-pressed="${att}" data-pm-tip="${att ? "Take it out of context" : "Add to context for your next message or rewrite"}" data-pm-key="${ENTER_KEY}"`) +
+      btn("insert", verb, " pm-lib-verb-quiet", ` data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_ENTER}"`) +
       `<span class="pm-detail-spacer"></span>` +
       `<button type="button" class="pm-lib-icon pm-detail-pin" data-act="pin" aria-pressed="${libPins.has(p.id)}" aria-label="${libPins.has(p.id) ? "Unpin" : "Pin to the top"}" data-pm-tip="${libPins.has(p.id) ? "Unpin" : "Pin to the top"}">★</button>` +
       `<button type="button" class="pm-lib-icon" data-act="improve" aria-label="Improve" data-pm-tip="Improve with ⊕">${LIB_ICON.spark}</button>` +
@@ -2031,7 +2037,7 @@ function libEditorHtml() {
     `<div class="pm-editor-hint">Blanks like <span class="pm-blank">{topic}</span> are asked for each time you insert it.</div>` +
     `<div class="pm-detail-acts"><button type="button" class="pm-lib-verb" data-act="edsave" id="pm-ed-save">Save</button>` +
     `<button type="button" class="pm-lib-verb pm-lib-verb-quiet" data-act="edcancel">Cancel</button>` +
-    `<span class="pm-lib-status" id="pm-ed-status" role="status"><kbd>${CMD_KEY}↵</kbd> save · <kbd>esc</kbd> cancel</span></div>`;
+    `<span class="pm-lib-status" id="pm-ed-status" role="status"><kbd>${CMD_ENTER}</kbd> save · <kbd>esc</kbd> cancel</span></div>`;
 }
 
 function libRowsHtml() {
@@ -2102,8 +2108,8 @@ function libFootHtml() {
   if (!parts.length) {
     const k = (key, what) => `<span><kbd>${key}</kbd>${what}</span>`;
     parts.push(`<span class="pm-lib-hints">` + (libView === "recent"
-      ? k("↵", libVerb().toLowerCase()) + k("→", "read") + k("esc", "close")
-      : k("↵", "add to context") + k(CMD_KEY + "↵", libVerb().toLowerCase()) + k("→", "read")) + `</span>`);
+      ? k(ENTER_KEY, libVerb().toLowerCase()) + k("→", "read") + k("esc", "close")
+      : k(ENTER_KEY, "add to context") + k(CMD_ENTER, libVerb().toLowerCase()) + k("→", "read")) + `</span>`);
   }
   return parts.join("");
 }
@@ -2115,7 +2121,7 @@ function libMenuHtml() {
     `<div class="pm-lib-menu-group"><div class="pm-lib-menu-cap">Rewrite style for ⊕</div>` +
     `<div class="pm-lib-views pm-lib-views-wide" role="group" aria-label="Default rewrite style">${STYLES.map(style).join("")}</div></div>` +
     `<hr>` +
-    `<button type="button" class="pm-lib-mi" role="menuitem" data-act="voice">Voice input<span>${CMD_KEY}⇧V</span></button>` +
+    `<button type="button" class="pm-lib-mi" role="menuitem" data-act="voice">Voice input<span>${MOD_SHIFT}V</span></button>` +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="shortcuts">Keyboard shortcuts<span>?</span></button>` +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="privacy">Privacy settings…</button>` +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="feedback">Send feedback…</button>` +
@@ -2218,7 +2224,7 @@ async function openSaveForm({ text, title = "", anchor = null, onClose = null, s
     `<div class="pm-save-field"><span>Tags</span><div class="pm-save-tags" id="pm-save-tags"></div>` +
     `<input id="pm-save-newtags" class="pm-lib-input" type="text" autocomplete="off" spellcheck="false" placeholder="New tags, comma separated" aria-label="New tags"></div>` +
     `<div class="pm-save-snip">${escHtml(norm(text))}</div>` +
-    `<div class="pm-save-foot"><span class="pm-save-status" id="pm-save-status" role="status"><kbd>↵</kbd>save<kbd>esc</kbd>cancel</span>` +
+    `<div class="pm-save-foot"><span class="pm-save-status" id="pm-save-status" role="status"><kbd>${ENTER_KEY}</kbd>save<kbd>esc</kbd>cancel</span>` +
     `<button type="button" class="pm-lib-verb pm-lib-verb-quiet" data-act="cancel">Cancel</button>` +
     `<button type="button" class="pm-lib-verb" data-act="save" id="pm-save-go">Save</button></div>`;
   document.body.appendChild(el);
@@ -3270,7 +3276,7 @@ function renderSlash() {
   menu.dataset.q = slash.q;
   menu.dataset.sel = String(slashSel);
   const count = promptsLoaded && items.length > 1 ? `<i>${items.length}</i>` : "";
-  const head = `<div class="pm-caret-head"><b>//${escHtml(slash.q)}${count}</b><span>↵ insert · ⇥ attach · esc</span></div>`;
+  const head = `<div class="pm-caret-head"><b>//${escHtml(slash.q)}${count}</b><span>${ENTER_KEY} insert · ${TAB_KEY} attach · esc</span></div>`;
   let body;
   if (!promptsLoaded) body = `<div class="pm-caret-empty">Loading your saved prompts…</div>`;
   else if (!items.length) body = `<div class="pm-caret-empty">${savedPrompts.length ? `No saved prompt matches “${escHtml(slash.q)}”` : "No saved prompts yet. Open the library to save one."}</div>`;
@@ -4648,7 +4654,7 @@ function failStreamingModal(message) {
     cardHead("Couldn\u2019t rewrite", "error") +
     `<div class="pm-card-text pm-card-error">${escHtml(message)}<span class="pm-card-error-note">Your text in the chat box is untouched.</span></div>` +
     cardFoot([
-      `<button class="pm-card-act pm-card-primary" id="pm-card-retry">${cardKey(CMD_KEY + "\u21B5")} try again</button>`,
+      `<button class="pm-card-act pm-card-primary" id="pm-card-retry">${cardKey(CMD_ENTER)} try again</button>`,
       `<button class="pm-card-act" id="pm-card-dismiss">${cardKey("esc")} dismiss</button>`,
     ])
   );
@@ -4746,7 +4752,7 @@ function showDiffModal(result) {
   const actions = [
     accept,
     ...(cardStale
-      ? [`<button class="pm-card-act pm-card-redo" id="pm-card-redo">${cardKey(CMD_KEY + "\u21B5")} redo</button>`]
+      ? [`<button class="pm-card-act pm-card-redo" id="pm-card-redo">${cardKey(CMD_ENTER)} redo</button>`]
       : []),
     // Hide, not dismiss: the draft goes back into the pill and can be brought
     // up again — from this chat or the next one. Discard is its own action.
