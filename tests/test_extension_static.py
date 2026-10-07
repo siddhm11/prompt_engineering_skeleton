@@ -1716,3 +1716,10 @@ def test_chatgpt_messages_are_read_by_how_chatgpt_marks_them_now():
 def test_a_hidden_you_said_is_not_saved_as_part_of_the_prompt():
     body = _function_bodies(CONTENT_JS, r"sentPromptText")["sentPromptText"]
     assert "VISUALLY_HIDDEN" in body and "cdk-visually-hidden" in CONTENT_JS
+
+
+def test_the_editor_promises_nothing_insert_does_not_do():
+    """Its hint said blanks such as {topic} are asked for on each insert;
+    nothing asks for them. Until something does, it says only that they are marked."""
+    assert "are asked for each time you insert it" not in CONTENT_JS
+    assert "asked for on Insert" not in CONTENT_JS

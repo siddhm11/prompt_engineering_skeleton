@@ -2101,7 +2101,11 @@ function libBodyHtml() {
     `<div class="pm-tray-detail" id="pm-lib-detail" data-i="${libSel}" aria-live="polite">${libPage === "edit" ? libEditorHtml() : libDetailHtml()}</div></div>`;
 }
 
-/** Blanks such as {topic} drawn as blanks: they are asked for on Insert. */
+/**
+ * Blanks such as {topic} drawn as blanks, so they stand out once inserted
+ * and are easy to find and change. Nothing asks for them yet: the editor's
+ * hint must not say otherwise until something does.
+ */
 function withBlanks(text) {
   return escHtml(text).replace(/\{([a-zA-Z][\w -]{0,30})\}/g, '<span class="pm-blank">{$1}</span>');
 }
@@ -2148,7 +2152,7 @@ function libEditorHtml() {
     `<label class="pm-editor-field"><span>Name</span><input id="pm-ed-title" class="pm-lib-input" type="text" autocomplete="off" maxlength="120" value="${escHtml(p.title || "")}" placeholder="What you will look for it by"></label>` +
     `<label class="pm-editor-field pm-editor-grow"><span>Prompt</span><textarea id="pm-ed-content" class="pm-lib-input" placeholder="Write it once, well. Use {curly braces} for the parts that change each time.">${escHtml(p.content || "")}</textarea></label>` +
     `<label class="pm-editor-field"><span>Tags</span><input id="pm-ed-tags" class="pm-lib-input" type="text" autocomplete="off" value="${escHtml((p.tags || []).join(", "))}" placeholder="writing, email"></label>` +
-    `<div class="pm-editor-hint">Blanks like <span class="pm-blank">{topic}</span> are asked for each time you insert it.</div>` +
+    `<div class="pm-editor-hint">Parts in braces, like <span class="pm-blank">{topic}</span>, are marked so the bits to change stand out.</div>` +
     `<div class="pm-detail-acts"><button type="button" class="pm-lib-verb" data-act="edsave" id="pm-ed-save">Save</button>` +
     `<button type="button" class="pm-lib-verb pm-lib-verb-quiet" data-act="edcancel">Cancel</button>` +
     `<span class="pm-lib-status" id="pm-ed-status" role="status"><kbd>${CMD_ENTER}</kbd> save · <kbd>esc</kbd> cancel</span></div>`;
