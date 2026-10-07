@@ -167,6 +167,30 @@ def main():
         page.click("#pm-library .pm-tray-tags button[data-tagfilter='']")
         check(len(rows()) == 5, "All brings every prompt back")
 
+        # the keys after a click (seen live: a click left them on <body>, deaf).
+        # On the last row, the one used last above, so the order checked
+        # further down is not disturbed.
+        page.locator("#pm-library .pm-lib-row[data-i] >> nth=4").click()
+        check(ev("document.activeElement.id") == "pm-lib-q", "a click on a row leaves the keyboard in the tray")
+        page.keyboard.press("ArrowDown")
+        check(ev("libSel") == 0, f"so ↓ still moves the highlight after it, got {ev('libSel')}")
+        foot = page.inner_text("#pm-lib-foot")
+        check("1 in context" in foot and "add to context" in foot and "insert" in foot,
+              f"the foot keeps its keys beside what is in context, got {foot!r}")
+        page.keyboard.press("ArrowUp")
+        page.keyboard.press("Enter")
+        check(ev("selectedIds.size") == 0, "and ↵ takes the clicked one back out")
+        page.click("#pm-lib-detail [data-act='attach']")
+        check(ev("document.activeElement.id") == "pm-lib-q", "a button in the pane, redrawn away, hands the keyboard back too")
+        page.click("#pm-lib-detail [data-act='attach']")
+        page.click("#pm-lib-detail .pm-detail-text")
+        check(ev("document.activeElement.id") == "pm-lib-q", "and so does a click on the prompt's words")
+        page.dblclick("#pm-lib-detail .pm-detail-text", position={"x": 12, "y": 10})   # on "Read", not the blank under the text
+        check(ev("String(getSelection()).trim()") != "", "a double click selects a word to copy, and keeps it")
+        page.keyboard.press("ArrowDown")
+        check(ev("libSel") == 0 and ev("document.activeElement.id") == "pm-lib-q", "and ↓ still moves the list from there")
+        page.keyboard.press("ArrowUp")
+
         # edit, in the pane
         page.fill("#pm-lib-q", "spec")
         page.click("#pm-lib-detail [data-act='edit']")
