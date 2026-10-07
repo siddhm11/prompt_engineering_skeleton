@@ -1504,6 +1504,10 @@ let libHistoryLoaded = false;
 let libTag = "";              // the tag filter row: "" for every tag
 let libEditId = null;         // libPage "edit": the saved prompt in the editor, or "new"
 let libNewDraft = "";         // what a new prompt starts as: the chat box's draft
+// The editor's fields as last typed. A redraw rebuilds the editor from this,
+// and the tray, closed by a scroll or a click on the conversation (where the
+// words to copy into a new prompt usually are), opens on it again.
+let libEditKept = null;       // { id, title, content, tags }
 let libDetailOpen = false;    // a narrow tray shows one pane: the list, or this prompt
 let libHoverTimer = null;
 const TRAY_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"]);
@@ -1717,9 +1721,9 @@ function togglePanel(force) {
     if (cardExpanded) hideCard();
     libDetailOpen = false;
     libTag = "";
-    libEditId = null;
+    libEditId = libEditKept ? libEditKept.id : null;
     libOrderUses = { ...libUses };
-    libPage = "list";
+    libPage = libEditKept ? "edit" : "list";
     libView = "saved";
     searchQuery = "";
     libSel = 0;
@@ -1727,7 +1731,8 @@ function togglePanel(force) {
     libConfirm = null;
     libHistoryLoaded = false;   // Recent is refetched per opening: new rewrites belong in it
     renderLibrary();
-    focusLibrarySearch();
+    if (libPage === "edit") document.getElementById("pm-ed-content")?.focus({ preventScroll: true });
+    else focusLibrarySearch();
     loadLibrary();
   } else {
     lib.innerHTML = "";
@@ -2216,11 +2221,12 @@ function libDetailHtml() {
 
 /** Edit a saved prompt where it is shown: name, words, tags. */
 function libEditorHtml() {
-  const p = savedPrompts.find((x) => x.id === libEditId) || { title: "", content: libNewDraft, tags: [] };
+  const kept = libEditKept?.id === libEditId ? libEditKept : null;
+  const p = kept || savedPrompts.find((x) => x.id === libEditId) || { title: "", content: libNewDraft, tags: [] };
   return `<div class="pm-detail-head"><div class="pm-detail-title">${libEditId === "new" ? "New prompt" : "Edit prompt"}</div></div>` +
     `<label class="pm-editor-field"><span>Name</span><input id="pm-ed-title" class="pm-lib-input" type="text" autocomplete="off" maxlength="120" value="${escHtml(p.title || "")}" placeholder="What you will look for it by"></label>` +
     `<label class="pm-editor-field pm-editor-grow"><span>Prompt</span><textarea id="pm-ed-content" class="pm-lib-input" placeholder="Write it once, well. Use {curly braces} for the parts that change each time.">${escHtml(p.content || "")}</textarea></label>` +
-    `<label class="pm-editor-field"><span>Tags</span><input id="pm-ed-tags" class="pm-lib-input" type="text" autocomplete="off" value="${escHtml((p.tags || []).join(", "))}" placeholder="writing, email"></label>` +
+    `<label class="pm-editor-field"><span>Tags</span><input id="pm-ed-tags" class="pm-lib-input" type="text" autocomplete="off" value="${escHtml(typeof p.tags === "string" ? p.tags : (p.tags || []).join(", "))}" placeholder="writing, email"></label>` +
     `<div class="pm-editor-hint">Parts in braces, like <span class="pm-blank">{topic}</span>, are marked so the bits to change stand out.</div>` +
     `<div class="pm-detail-acts"><button type="button" class="pm-lib-verb" data-act="edsave" id="pm-ed-save">Save</button>` +
     `<button type="button" class="pm-lib-verb pm-lib-verb-quiet" data-act="edcancel">Cancel</button>` +
@@ -2785,6 +2791,15 @@ function onLibraryClick(e) {
 }
 
 function onLibraryInput(e) {
+  if (e.target.id?.startsWith("pm-ed-")) {
+    libEditKept = {
+      id: libEditId,
+      title: document.getElementById("pm-ed-title")?.value || "",
+      content: document.getElementById("pm-ed-content")?.value || "",
+      tags: document.getElementById("pm-ed-tags")?.value || "",
+    };
+    return;
+  }
   if (e.target.id !== "pm-lib-q") return;
   searchQuery = e.target.value;
   libSel = 0; libConfirm = null;
@@ -2870,6 +2885,7 @@ function isOnePane() {
 // ── The editor: a saved prompt's name, words and tags, in its own pane ──
 
 function openEditor(id) {
+  libEditKept = null;
   libPage = "edit";
   libEditId = id;
   libConfirm = null;
@@ -2893,6 +2909,7 @@ function openNewPrompt() {
 }
 
 function closeEditor() {
+  libEditKept = null;
   libPage = "list";
   libEditId = null;
   renderLibrary();
@@ -2937,6 +2954,7 @@ async function saveEditor() {
     return;
   }
   await fetchSavedPrompts();
+  libEditKept = null;
   libPage = "list";
   libEditId = null;
   libTag = "";
