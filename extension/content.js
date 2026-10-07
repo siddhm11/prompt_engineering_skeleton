@@ -1509,6 +1509,10 @@ const LIB_HOVER_MS = 140;
 // knows neither, and both only decide the order the list is shown in.
 const LIB_LOCAL_KEY = "pm_lib_local";
 let libPins = new Set();
+// The size the user dragged the tray to; 0 is "pick it from the chat box".
+const TRAY_SIZE_KEY = "pm_tray_size";
+let traySize = { w: 0, h: 0 };
+let trayGripTap = 0;          // when an edge was last pressed without a drag
 let libUses = {};
 // The order is taken when the tray opens and kept while it stays open: using
 // a prompt makes it recent, and re-sorting at once moved the row out from
@@ -1579,6 +1583,7 @@ function createLibrary() {
     libHoverTimer = setTimeout(() => { if (panelOpen) libSelect(i); }, LIB_HOVER_MS);
   });
   lib.addEventListener("mouseleave", () => clearTimeout(libHoverTimer));
+  lib.addEventListener("pointerdown", startTrayResize);
 
   // Anywhere else closes it. Capture phase, so a host handler that stops the
   // event cannot strand the sheet open. Modals and toasts the sheet itself
@@ -1611,8 +1616,10 @@ function createLibrary() {
     togglePanel(false);
   }, { capture: true, passive: true });
 
-  storageGet(["pm_slash", LIB_LOCAL_KEY], (r) => {
+  storageGet(["pm_slash", LIB_LOCAL_KEY, TRAY_SIZE_KEY], (r) => {
     slashEnabled = r.pm_slash !== false;
+    const size = r[TRAY_SIZE_KEY] || {};
+    traySize = { w: Number(size.w) || 0, h: Number(size.h) || 0 };
     const local = r[LIB_LOCAL_KEY] || {};
     libPins = new Set(Array.isArray(local.pins) ? local.pins : []);
     libUses = local.uses && typeof local.uses === "object" ? local.uses : {};
@@ -1693,6 +1700,66 @@ function openShortcuts() {
   openKeyMap();
 }
 
+// The tray's edges: its top and both sides, and the two top corners. Its
+// bottom stands on the chat box and stays there.
+const TRAY_GRIPS = ["n", "w", "e", "nw", "ne"].map((g) =>
+  `<div class="pm-tray-grip pm-tray-grip-${g}" data-grip="${g}" title="Drag to resize. Double-click for the usual size." aria-hidden="true"></div>`).join("");
+
+/**
+ * Drag an edge of the tray to size it; the size is kept on this device and
+ * used every time it opens, within the window and the room above the box.
+ * The tray stays centred on the chat box, so a side drags both sides.
+ * A long prompt in the pane, or a long list, no longer has to scroll inside
+ * 600px while the screen above it stands empty.
+ */
+function startTrayResize(e) {
+  const grip = e.target.closest?.(".pm-tray-grip");
+  const lib = document.getElementById("pm-library");
+  if (!grip || !lib || e.button !== 0 || !lib.classList.contains("pm-tray")) return;
+  e.preventDefault();
+  const g = grip.dataset.grip;
+  const r = lib.getBoundingClientRect();
+  const x0 = e.clientX, y0 = e.clientY;
+  // The tray, not the grip: a redraw mid-drag replaces the grip.
+  try { lib.setPointerCapture(e.pointerId); } catch { /* window listeners finish it */ }
+  lib.classList.add("pm-tray-resizing");
+  let moved = false;
+  const move = (m) => {
+    if (m.pointerId !== e.pointerId) return;
+    if (!moved && Math.hypot(m.clientX - x0, m.clientY - y0) < 3) return;
+    moved = true;
+    if (g.includes("n")) traySize.h = Math.round(r.height - (m.clientY - y0));
+    if (g.includes("e")) traySize.w = Math.round(r.width + 2 * (m.clientX - x0));
+    if (g.includes("w")) traySize.w = Math.round(r.width - 2 * (m.clientX - x0));
+    positionLibrary();
+  };
+  const end = () => {
+    window.removeEventListener("pointermove", move, true);
+    window.removeEventListener("pointerup", end, true);
+    window.removeEventListener("pointercancel", end, true);
+    lib.removeEventListener("lostpointercapture", end);
+    lib.classList.remove("pm-tray-resizing");
+    // Two presses on an edge without a drag put back the usual size. Counted
+    // here: with the pointer captured, the dblclick lands on the tray, not
+    // the edge, as it did on the card's grip.
+    if (!moved) {
+      const again = Date.now() - trayGripTap < 450;
+      trayGripTap = again ? 0 : Date.now();
+      if (again) { traySize = { w: 0, h: 0 }; storageSet({ [TRAY_SIZE_KEY]: traySize }); positionLibrary(); }
+      return;
+    }
+    // Keep the size it reached, not one the window or the room cut short.
+    const b = lib.getBoundingClientRect();
+    if (g.includes("n")) traySize.h = Math.round(b.height);
+    if (/[ew]/.test(g)) traySize.w = Math.round(b.width);
+    storageSet({ [TRAY_SIZE_KEY]: traySize });
+  };
+  window.addEventListener("pointermove", move, true);
+  window.addEventListener("pointerup", end, true);
+  window.addEventListener("pointercancel", end, true);
+  lib.addEventListener("lostpointercapture", end);
+}
+
 /**
  * Nothing in the tray that can use the keys holds the keyboard: it fell to
  * <body>, or with a node a redraw removed, or a press on the tray's own ground
@@ -1750,6 +1817,7 @@ const LIB_ROOM_WANTED = 420;   // px above the chat box before the sheet may com
 const TRAY_MIN = 520, TRAY_MAX = 880;   // the tray's width, from the chat box's
 const TRAY_TWO_PANES = 600;             // narrower than this, one pane at a time
 const TRAY_ROOM_WANTED = 340;           // px above the box before the tray may come down over its text
+const TRAY_W_MIN = 420, TRAY_H_MIN = 240;   // the smallest a drag on its edges makes it
 const RAIL_GAP = 6, RAIL_ROW = 26;      // the chips' row: its gap above the box, and its height
 const RAIL_SLOT = RAIL_GAP + RAIL_ROW;
 
@@ -1772,7 +1840,12 @@ function positionLibrary() {
   const vw = window.innerWidth, vh = window.innerHeight, m = 12, gap = 8;
   if (!frame || frame.width < 300 || frame.top < 120) { positionSheetOnPill(); return; }
   lib.classList.add("pm-tray");
-  const width = Math.round(Math.min(vw - 2 * m, Math.max(TRAY_MIN, Math.min(TRAY_MAX, frame.width))));
+  // A size the user dragged the tray to wins over the one it picks itself,
+  // within the window and the room above the box (see startTrayResize).
+  const width = Math.round(Math.min(vw - 2 * m, traySize.w
+    ? Math.max(TRAY_W_MIN, traySize.w)
+    : Math.max(TRAY_MIN, Math.min(TRAY_MAX, frame.width))));
+  const wanted = traySize.h ? Math.max(TRAY_H_MIN, traySize.h) : Math.min(600, vh * 0.62);
   const left = Math.round(Math.max(m, Math.min(frame.left + (frame.width - width) / 2, vw - width - m)));
   // The tray stands on the row the context chips land on, whether or not any
   // are there yet. It used to stand on the chips themselves, so each one that
@@ -1782,11 +1855,11 @@ function positionLibrary() {
   // open the chips keep to that one row (see fitRailToOneRow).
   let floor = frame.top - RAIL_SLOT - gap;
   lib.dataset.overBox = "false";
-  if (floor - m < TRAY_ROOM_WANTED) {
+  if (floor - m < Math.min(TRAY_ROOM_WANTED, wanted)) {
     const controls = composerControlsTop(composer);
     if (controls !== null && controls - gap > floor) { floor = controls - gap; lib.dataset.overBox = "true"; }
   }
-  const height = Math.round(Math.max(200, Math.min(600, vh * 0.62, floor - m)));
+  const height = Math.round(Math.max(200, Math.min(wanted, floor - m)));
   Object.assign(lib.style, {
     width: width + "px", left: left + "px", right: "auto", top: "auto",
     bottom: Math.round(vh - floor) + "px", height: height + "px", maxHeight: height + "px",
@@ -1893,7 +1966,7 @@ function renderLibrary() {
 
   lib.dataset.page = libPage;
   lib.innerHTML = libHeadHtml() + libBodyHtml() + (libPage === "list" ? `<div class="pm-lib-foot" id="pm-lib-foot">${libFootHtml()}</div>` : "") +
-    (libMenu ? libMenuHtml() : "");
+    (libMenu ? libMenuHtml() : "") + TRAY_GRIPS;
 
   const again = focusId && lib.querySelector(`[id="${focusId}"]`);
   if (again) {

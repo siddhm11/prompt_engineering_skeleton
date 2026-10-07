@@ -2311,6 +2311,31 @@
 .pm-lib.pm-tray-one .pm-tray-showing-detail > .pm-tray-detail { display: flex; }
 .pm-lib:not(.pm-tray-one) .pm-lib-open, .pm-lib:not(.pm-tray-one) .pm-detail-back { display: none; }
 
+/* Its edges size it (see startTrayResize). The top's handle shows on hover. */
+.pm-lib .pm-tray-grip { position: absolute; z-index: 4; touch-action: none; }
+.pm-lib:not(.pm-tray) .pm-tray-grip { display: none; }
+.pm-lib .pm-tray-grip-n { top: 0; left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.pm-lib .pm-tray-grip-w { top: 14px; bottom: 14px; left: 0; width: 6px; cursor: ew-resize; }
+.pm-lib .pm-tray-grip-e { top: 14px; bottom: 14px; right: 0; width: 6px; cursor: ew-resize; }
+.pm-lib .pm-tray-grip-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.pm-lib .pm-tray-grip-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.pm-lib .pm-tray-grip-n::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 50%;
+    width: 36px;
+    height: 3px;
+    margin-left: -18px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, .2);
+    opacity: 0;
+    transition: opacity .12s;
+}
+.pm-lib.pm-tray:hover .pm-tray-grip-n::after,
+.pm-lib.pm-tray-resizing .pm-tray-grip-n::after { opacity: 1; }
+.pm-lib.pm-tray-resizing { user-select: none; }
+
 /* Rows: compact, since the whole prompt is a pane away. */
 .pm-lib .pm-lib-row.pm-lib-row { display: flex; align-items: flex-start; gap: 9px; padding: 8px 8px 8px 9px; }
 .pm-lib .pm-lib-row .pm-lib-tick, .pm-lib .pm-lib-row .pm-lib-dot { flex: none; }
