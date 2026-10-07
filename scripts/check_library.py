@@ -128,7 +128,8 @@ def main():
         lib, box, send = rect("#pm-library"), rect("form"), rect(".send")
         check(abs(lib["l"] - box["l"]) <= 1 and abs(lib["r"] - box["r"]) <= 1,
               f"the tray is as wide as the chat box and lines up with it ({lib} vs {box})")
-        check(lib["b"] <= box["t"] and box["t"] - lib["b"] <= 12, "it stands on the chat box's edge, not over it")
+        check(lib["b"] <= box["t"] and 36 <= box["t"] - lib["b"] <= 44,
+              f"it stands on the chat box, over the row the context chips land on, got a {box['t'] - lib['b']:.0f}px gap")
         check(not overlaps(lib, send) and lib["t"] >= 0, "off the Send button, and inside the window")
         listr, detr = rect("#pm-lib-list"), rect("#pm-lib-detail")
         check(listr["r"] <= detr["l"] + 1 and detr["r"] - detr["l"] > 300, "two panes: the list, and the prompt beside it")
@@ -403,6 +404,36 @@ def main():
         page.set_viewport_size({"width": 1440, "height": 900})
         ev("document.body.classList.remove('center'); document.getElementById('composer').textContent = ''")
         page.wait_for_timeout(100)
+
+        # ── the tray holds its size as chips land (seen live: a second pick shrank it) ──
+        page.set_viewport_size({"width": 1440, "height": 820})
+        ev("document.body.classList.add('center'); clearAttachments()")
+        page.wait_for_timeout(100)
+        open_lib()
+        page.wait_for_timeout(200)
+        sizes = [rect("#pm-library")]
+        for i in range(4):
+            page.locator("#pm-library .pm-lib-row[data-i]").nth(i).click()
+            page.wait_for_timeout(150)
+            sizes.append(rect("#pm-library"))
+        check(all(sz == sizes[0] for sz in sizes), f"ticking one prompt after another neither moves nor shrinks the tray, got {sizes}")
+        rail = rect("#pm-rail")
+        check(rail["b"] - rail["t"] <= 27 and rail["b"] <= rect("form")["t"] and not overlaps(rail, rect("#pm-library")),
+              f"the chips keep to their one row, between the tray and the box, got {rail}")
+        more = page.locator("#pm-rail .pm-rail-more")
+        titles = ev("[...selectedIds].map((id) => attachTitles.get(id))")
+        n = int(more.inner_text().lstrip("+")) if more.count() == 1 else 0
+        shown = page.locator("#pm-rail .pm-rail-chip:not([hidden])").count()
+        check(n >= 1 and shown + n == 4 and more.get_attribute("title") == ", ".join(titles[:n]),
+              f"the oldest fold into +{n}, which names them, got {shown} shown")
+        check(page.locator("#pm-rail .pm-rail-chip:not([hidden])").last.inner_text().strip() == titles[-1],
+              f"and the one just picked stays in view ({titles[-1]!r})")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(100)
+        check(page.locator("#pm-rail .pm-rail-more").count() == 0 and page.locator("#pm-rail .pm-rail-chip[hidden]").count() == 0,
+              "with the tray closed every chip shows again")
+        ev("clearAttachments(); document.body.classList.remove('center')")
+        page.set_viewport_size({"width": 1440, "height": 900})
 
         # ── keys where they act: tooltips with keycaps ──
         open_lib()
