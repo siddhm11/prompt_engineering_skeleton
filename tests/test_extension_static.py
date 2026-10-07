@@ -677,13 +677,15 @@ def test_toasts_sit_above_everything():
 
 def test_no_page_level_surface_hardcodes_its_own_level():
     """
-    The one remaining literal is local: the library's ⋯ menu is `position:
-    absolute` inside the sheet, which is fixed and z-indexed and so its own
-    stacking context; the 1 says nothing about page-level order.
+    The remaining literals are local: the library's ⋯ menu and the tray's
+    resize edges are `position: absolute` inside the sheet, which is fixed
+    and z-indexed and so its own stacking context; the 1s say nothing about
+    page-level order.
     """
     literals = re.findall(r"z-index:\s*(\d+);", STYLES_CSS)
-    assert literals == ["1"], f"unscaled page-level z-index: {literals}"
+    assert literals == ["1", "1"], f"unscaled page-level z-index: {literals}"
     assert "z-index: 1;" in _css_block(".pm-lib .pm-lib-menu")
+    assert "z-index: 1;" in _css_block(".pm-lib .pm-tray-grip")
 
 
 def test_the_scale_clears_host_page_overlays():
@@ -1502,7 +1504,7 @@ def test_every_listed_chord_is_one_the_code_answers():
         ("${MOD_SHIFT}V", 'e.code === "KeyV"'),
         ("${MOD_SHIFT}L", 'e.code === "KeyL"'),
         ("${MOD_SHIFT}P", 'e.code === "KeyP"'),
-        ("${CMD_KEY}↵", 'e.key === "Enter"'),
+        ("CMD_ENTER", 'e.key === "Enter"'),
         ("${CMD_KEY}S", 'e.key.toLowerCase() === "s"'),
     ):
         assert chord in listed, f"{chord} is no longer listed on the sheet"
@@ -1510,7 +1512,19 @@ def test_every_listed_chord_is_one_the_code_answers():
     assert '(e.key === "[" || e.key === "]")' in CONTENT_JS
     assert 'e.key === "ArrowRight" && e.target.selectionStart === e.target.value.length' in CONTENT_JS, \
         "the sheet lists → for the whole prompt"
-    assert 'e.key === "ArrowLeft" && libPeek !== null' in CONTENT_JS
+    assert 'e.key === "ArrowLeft" && libDetailOpen' in CONTENT_JS
+
+
+def test_keys_are_written_the_way_each_platform_writes_them():
+    """A Mac prints ⌘↵ and ⌘⇧V; Windows prints Ctrl+Enter and Ctrl+Shift+V.
+    Gluing "Ctrl+" to a Mac glyph showed Windows users Ctrl+↵ and Ctrl+⇧V,
+    keys their keyboards do not have."""
+    assert 'const ENTER_KEY = IS_MAC ? "↵" : "Enter";' in CONTENT_JS
+    assert 'const TAB_KEY = IS_MAC ? "⇥" : "Tab";' in CONTENT_JS
+    for glued in ("${CMD_KEY}↵", 'CMD_KEY + "↵"', 'CMD_KEY + "\\u21B5"', "${CMD_KEY}⇧"):
+        assert glued not in CONTENT_JS, f"{glued} reads Ctrl+↵ or Ctrl+⇧ off a Mac"
+    for drawn in ('data-pm-key="↵"', 'k("↵"', '<kbd>↵</kbd>', '<span>↵ insert'):
+        assert drawn not in CONTENT_JS, f"{drawn} draws a Mac key on every platform"
 
 
 def test_the_library_keys_are_listed_the_way_they_now_work():
@@ -1518,7 +1532,7 @@ def test_the_library_keys_are_listed_the_way_they_now_work():
     listed = _shortcuts_block()
     lib = listed[listed.index('"In the library"'):]
     assert '"Add it to context, or take it out"' in lib
-    assert '`${CMD_KEY}↵`], what: "Insert it into the chat box"' in lib
+    assert 'CMD_ENTER], what: "Insert it into the chat box"' in lib
     assert 'libAct(mod && it?.kind === "saved" ? "insert" : "primary")' in CONTENT_JS
     assert 'if (act === "primary") act = it?.kind === "saved" ? "attach"' in CONTENT_JS
 
@@ -1682,7 +1696,10 @@ def test_every_key_a_tooltip_shows_is_one_the_map_lists():
     keys = {k.strip('`"') for k in keys}
     assert keys, "no control carries a keycap tooltip"
     for k in keys:
-        assert f'"{k}"' in listed or f"`{k}`" in listed, f"a tooltip shows {k}, which the map does not list"
+        # A key held in a constant (${CMD_ENTER}) is listed by the constant.
+        const = re.fullmatch(r"\$\{(\w+)\}", k)
+        found = re.search(rf"keys: \[[^\]]*\b{const.group(1)}\b", listed) if const else (f'"{k}"' in listed or f"`{k}`" in listed)
+        assert found, f"a tooltip shows {k}, which the map does not list"
     assert 'title="Close (esc)"' not in CONTENT_JS, "a native title would double the tooltip"
 
 
@@ -1699,3 +1716,10 @@ def test_chatgpt_messages_are_read_by_how_chatgpt_marks_them_now():
 def test_a_hidden_you_said_is_not_saved_as_part_of_the_prompt():
     body = _function_bodies(CONTENT_JS, r"sentPromptText")["sentPromptText"]
     assert "VISUALLY_HIDDEN" in body and "cdk-visually-hidden" in CONTENT_JS
+
+
+def test_the_editor_promises_nothing_insert_does_not_do():
+    """Its hint said blanks such as {topic} are asked for on each insert;
+    nothing asks for them. Until something does, it says only that they are marked."""
+    assert "are asked for each time you insert it" not in CONTENT_JS
+    assert "asked for on Insert" not in CONTENT_JS

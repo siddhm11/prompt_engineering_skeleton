@@ -90,7 +90,7 @@ window.FAKE_API = {
       const dup = A.prompts.find((p) => p.content === body.content);
       if (dup) return json({ id: dup.id, duplicate: true });
       const id = "p" + A.nextId++;
-      A.prompts.unshift({ id, title: body.title || "", content: body.content, tags: body.tags || [] });
+      A.prompts.unshift({ id, title: body.title || "", content: body.content, tags: body.tags || [], created_at: new Date().toISOString() });
       return json({ id, message: "Prompt saved." });
     }
     const one = path.match(/^\/saved-prompts\/(.+)$/);

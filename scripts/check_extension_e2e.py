@@ -456,9 +456,9 @@ def main():
         page.keyboard.press("Meta+Shift+L")
         page.wait_for_selector("#pm-library .pm-lib-row", timeout=8000)
         row = page.locator("#pm-library .pm-lib-row", has_text="Bug report triage")
-        row.hover()   # the row's ⋯ shows on hover, as it does for a person
-        row.locator("[data-act='more']").click()
-        page.click("#pm-library [data-act='improve']")
+        row.hover()   # a person rests on the row; the pane beside the list follows
+        page.wait_for_function("(document.getElementById('pm-lib-detail')?.textContent || '').includes('Bug report triage')", timeout=3000)
+        page.click("#pm-lib-detail [data-act='improve']")
 
         def card_title():
             return page.evaluate("(document.querySelector('#pm-card .pm-card-title')?.textContent || '').trim()")
@@ -500,9 +500,9 @@ def main():
         page.keyboard.press("Meta+Shift+L")
         page.wait_for_selector("#pm-library .pm-lib-row", timeout=8000)
         row = page.locator("#pm-library .pm-lib-row", has_text="Code review template")
-        row.hover()   # the row's ⋯ shows on hover, as it does for a person
-        row.locator("[data-act='more']").click()
-        page.click("#pm-library [data-act='improve']")
+        row.hover()   # a person rests on the row; the pane beside the list follows
+        page.wait_for_function("(document.getElementById('pm-lib-detail')?.textContent || '').includes('Code review template')", timeout=3000)
+        page.click("#pm-lib-detail [data-act='improve']")
         page.wait_for_function("(document.querySelector('#pm-card .pm-card-title')?.textContent || '').startsWith('Improved')", timeout=8000)
         page.click("#pm-card-save")
         page.wait_for_selector("#pm-save", timeout=5000)
