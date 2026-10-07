@@ -1503,6 +1503,7 @@ let libTag = "";              // the tag filter row: "" for every tag
 let libEditId = null;         // libPage "edit": the saved prompt in the editor
 let libDetailOpen = false;    // a narrow tray shows one pane: the list, or this prompt
 let libHoverTimer = null;
+const TRAY_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"]);
 const LIB_HOVER_MS = 140;
 // Pins and when each prompt was last used, kept on this device: the server
 // knows neither, and both only decide the order the list is shown in.
@@ -1557,9 +1558,13 @@ function createLibrary() {
   lib.setAttribute("role", "dialog");
   lib.setAttribute("aria-label", "Library");
   lib.hidden = true;
+  // Focusable itself, so its keys still answer on a page with no search box.
+  lib.tabIndex = -1;
   document.body.appendChild(lib);
 
   lib.addEventListener("click", onLibraryClick);
+  // After the click has done its work: see keepTrayKeyboard().
+  lib.addEventListener("click", () => { if (panelOpen && keyboardFell()) keepTrayKeyboard(); });
   lib.addEventListener("input", onLibraryInput);
   lib.addEventListener("change", onLibraryChange);
   lib.addEventListener("keydown", onLibraryKeydown);
@@ -1583,6 +1588,19 @@ function createLibrary() {
     if (e.target.closest?.("#pm-library, #pm-save, #pm-keys, #pm-library-btn, #pm-help-btn, #pm-trigger, #pm-rail, .pm-modal-overlay, #pm-toast-stack")) return;
     togglePanel(false);
   }, true);
+  // Words selected in the pane leave the keyboard where it fell (see
+  // keepTrayKeyboard): the tray's keys still answer from there.
+  document.addEventListener("keydown", (e) => {
+    if (!panelOpen || keyMapOpen || !keyboardFell() || !TRAY_KEYS.has(e.key)) return;
+    // A tray key means the copying is done: the keyboard goes home first.
+    const q = libPage === "list" && document.getElementById("pm-lib-q");
+    const target = q || document.getElementById("pm-library");
+    target?.focus({ preventScroll: true });
+    onLibraryKeydown({
+      key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, isComposing: false, target,
+      preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation(),
+    });
+  });
   // So does turning the wheel over the conversation: the sheet is fixed to
   // the pill and would float over messages the user is trying to read.
   // Wheel, not scroll, because only a wheel is the user; a scroll event also
@@ -1672,6 +1690,30 @@ function togglePanel(force) {
 function openShortcuts() {
   hideTip();
   openKeyMap();
+}
+
+/**
+ * Nothing in the tray that can use the keys holds the keyboard: it fell to
+ * <body>, or with a node a redraw removed, or a press on the tray's own ground
+ * focused the tray, which hears esc but cannot move the list.
+ */
+function keyboardFell() {
+  const a = document.activeElement;
+  return !a || a === document.body || !a.isConnected || a.id === "pm-library";
+}
+
+/**
+ * A click on a row, on a button in the prompt's pane or on its words left the
+ * keyboard on <body>: rows and words do not take focus, and the redraw that
+ * follows a button removes the button that had it. Every key the tray answers
+ * went with it, so ↑↓, ↵, → and esc did nothing until the user clicked the
+ * search box again. The keyboard goes back to the tray, unless the click
+ * selected words to copy.
+ */
+function keepTrayKeyboard() {
+  if (String(window.getSelection?.() || "")) return;
+  const q = libPage === "list" && document.getElementById("pm-lib-q");
+  (q || document.getElementById("pm-library"))?.focus({ preventScroll: true });
 }
 
 /** Close the sheet and hand the keyboard back to the chat box. */
