@@ -515,11 +515,14 @@ async function activateExistingTabs() {
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   if (reason === "update") {
-    // Simple mode (content.js) is the default for new installs only. Someone
-    // updating has learned the pill, and keeps it until they switch from the
-    // library's ⋯ menu.
-    chrome.storage.local.get("pm_simple_mode", (r) => {
-      if (r.pm_simple_mode === undefined) chrome.storage.local.set({ pm_simple_mode: false });
+    // The simple controls replace the corner ⊕ for people updating too: the
+    // people who found the ⊕ hard to use are exactly the ones who already
+    // have it. Moved once (pm_simple_v), with a note on the chat page saying
+    // what moved and how to go back. Whoever has chosen the classic controls
+    // themselves (pm_classic_chosen) keeps them.
+    chrome.storage.local.get(["pm_simple_v", "pm_classic_chosen"], (r) => {
+      if (r.pm_simple_v === 2 || r.pm_classic_chosen) return;
+      chrome.storage.local.set({ pm_simple_mode: true, pm_simple_v: 2, pm_whats_new: "simple" });
     });
     // Do not inject another copy into a tab that already has the old one.
     // The old isolated world cannot be revived, and two copies race to own
@@ -529,7 +532,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   if (reason !== "install") return;
 
   // Before the tabs below get their content script, so it starts simple.
-  await chrome.storage.local.set({ pm_simple_mode: true });
+  await chrome.storage.local.set({ pm_simple_mode: true, pm_simple_v: 2 });
 
   // Not awaited. Fetching the free token now also wakes the server, which
   // sleeps when idle and takes a while to answer its first request, so the

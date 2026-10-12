@@ -1409,6 +1409,30 @@
 }
 
 .pm-card-pane-label { display: none; }
+
+/* Simple mode's Compare: what was typed, above what is in the box now. */
+.pm-card-compare .pm-cmp { display: flex; flex-direction: column; min-height: 0; }
+.pm-card-compare .pm-cmp-pane { display: flex; flex-direction: column; min-height: 0; }
+.pm-card-compare .pm-cmp-pane + .pm-cmp-pane { border-top: 1px solid var(--pm-border); }
+.pm-card-compare .pm-cmp-label {
+    padding: 10px 17px 0;
+    font: 600 11px/1.4 var(--pm-font);
+    letter-spacing: .02em;
+    color: var(--pm-text-secondary);
+}
+.pm-card-compare .pm-cmp-now .pm-cmp-label { color: var(--pm-accent); }
+.pm-card-compare .pm-cmp-text {
+    padding: 6px 17px 12px;
+    max-height: min(22vh, var(--pm-card-text-max, 22vh));
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 14.5px/1.55 var(--pm-font);
+}
+.pm-card-compare .pm-cmp-was { color: var(--pm-text-secondary); }
+.pm-card-wide.pm-card-compare .pm-cmp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.pm-card-wide.pm-card-compare .pm-cmp-pane + .pm-cmp-pane { border-top: 0; border-left: 1px solid var(--pm-border); }
+.pm-card-wide.pm-card-compare .pm-cmp-text { max-height: none; flex: 1 1 auto; }
 .pm-card-reference { display: none; }
 .pm-card-free .pm-card-comparison {
     display: flex;
@@ -2342,6 +2366,9 @@
 .pm-lib .pm-lib-row.pm-att { background: var(--pm-accent-soft); }
 .pm-lib .pm-lib-row.pm-att.pm-sel { background: rgba(80, 200, 168, 0.19); }
 .pm-lib .pm-lib-row.pm-att .pm-lib-tick { background: var(--pm-accent); border-color: var(--pm-accent); color: #06201a; }
+/* Simple mode: a click inserts, so the tick is not a control. It shows only
+   on a prompt that is in use as context, as the mark of that. */
+.pm-lib.pm-lib-simple .pm-lib-row:not(.pm-att) .pm-lib-tick { visibility: hidden; }
 @media (prefers-reduced-motion: reduce) { .pm-lib .pm-lib-tick { transition: none; } }
 
 /* One visible action until you point at a row: the clip, and only on a row
@@ -2557,7 +2584,9 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    max-width: 280px;
+    /* One line, as wide as it needs: a fixed cap clipped the keycaps of a
+       three-key chord ("Ctrl Shift P") off its right edge. */
+    max-width: calc(100vw - 16px);
     padding: 5px 6px 5px 9px;
     border-radius: 8px;
     background: #050706;

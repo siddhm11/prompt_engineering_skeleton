@@ -109,7 +109,7 @@ const SHORTCUTS = () => [
   {
     where: "Anywhere on the page",
     rows: [
-      { keys: [`${MOD_SHIFT}E`], what: "Rewrite what is in the chat box" },
+      { keys: [`${MOD_SHIFT}E`], what: simpleMode ? "Improve what is in the chat box" : "Rewrite what is in the chat box" },
       { keys: [`${MOD_SHIFT}V`], what: "Start voice input" },
       { keys: [`${MOD_SHIFT}L`], what: "Open the library" },
       { keys: ["?"], what: "Show this list", note: "when you are not typing" },
@@ -127,7 +127,15 @@ const SHORTCUTS = () => [
         ]
       : [{ keys: ["//"], what: "Saved prompts at the cursor", note: "switched off in Privacy" }],
   },
-  {
+  // Simple mode has no pill and no card to step through: after Improve
+  // there is a rewrite in the box, and Compare.
+  ...(simpleMode ? [{
+    where: "After Improve",
+    rows: [
+      { keys: [`${MOD_SHIFT}P`], what: "Compare it with what you typed" },
+      { keys: ["Esc"], what: "Stop a rewrite that is still writing", note: "your text goes back" },
+    ],
+  }] : [{
     where: "When a draft is waiting in the pill",
     rows: [
       { keys: [`${MOD_SHIFT}P`], what: "Show or hide its card" },
@@ -141,14 +149,19 @@ const SHORTCUTS = () => [
       { keys: [`${CMD_KEY}S`], what: "Save the rewrite to your library" },
       { keys: ["[", "]"], what: "Step through versions", note: "once there is more than one" },
     ],
-  },
+  }]),
   {
     where: "In the library",
     rows: [
       { keys: ["↑", "↓"], what: "Move through the list" },
       { keys: ["→"], what: "Read the whole prompt", note: "← puts it away" },
+      // Simple mode: a click or ↵ inserts; context is in the row's ⋯.
+      ...(simpleMode ? [
+        { keys: [ENTER_KEY], what: "Insert it into the chat box", note: "a click does the same" },
+      ] : [
       { keys: [ENTER_KEY], what: "Add it to context, or take it out", note: "a click does the same" },
       { keys: [CMD_ENTER], what: "Insert it into the chat box" },
+      ]),
       { keys: ["Esc"], what: "Go back, then close" },
     ],
   },
@@ -1984,6 +1997,7 @@ function renderLibrary() {
   const caret = active?.id === "pm-lib-q" ? active.selectionStart : null;
 
   lib.dataset.page = libPage;
+  lib.classList.toggle("pm-lib-simple", simpleMode);
   lib.innerHTML = libHeadHtml() + libBodyHtml() + (libPage === "list" ? `<div class="pm-lib-foot" id="pm-lib-foot">${libFootHtml()}</div>` : "") +
     (libMenu ? libMenuHtml() : "") + SHEET_GRIPS;
 
@@ -2145,7 +2159,9 @@ function libRowsHtml() {
       `<button type="button" class="pm-lib-icon" data-act="more" aria-label="More actions" aria-expanded="${libRowMenu === p.id}">${LIB_ICON.more}</button>` +
       `<button type="button" class="pm-lib-verb" data-act="insert" data-pm-tip="${verb} into the chat box" data-pm-key="${CMD_ENTER}">${verb}</button></div></div>`;
     if (libRowMenu === p.id) {
-      row += `<div class="pm-lib-rowmenu"><button type="button" data-act="improve" data-i="${i}" title="Rewrite this saved prompt, then update it or save a new one">Improve</button>` +
+      row += `<div class="pm-lib-rowmenu">` +
+        (simpleMode ? `<button type="button" data-act="attach" data-i="${i}" title="Shapes your next Improve without being pasted into the chat">${att ? "Stop using as context" : "Use as context"}</button>` : "") +
+        `<button type="button" data-act="improve" data-i="${i}" title="Rewrite this saved prompt, then update it or save a new one">Improve</button>` +
         `<button type="button" data-act="edit" data-i="${i}">Edit</button><button type="button" class="pm-lib-danger" data-act="ask" data-i="${i}">Delete</button></div>`;
     }
     return row;
@@ -2166,7 +2182,9 @@ function libFootHtml() {
   if (!selectedIds.size) {
     parts.push(`<span class="pm-lib-hints">` + (libView === "recent"
       ? k(ENTER_KEY, libVerb().toLowerCase()) + k("→", "read") + k("esc", "close")
-      : k(ENTER_KEY, "add to context") + k(CMD_ENTER, libVerb().toLowerCase()) + k("→", "read")) + `</span>`);
+      : simpleMode
+        ? k(ENTER_KEY, libVerb().toLowerCase()) + k("→", "read") + k("esc", "close")
+        : k(ENTER_KEY, "add to context") + k(CMD_ENTER, libVerb().toLowerCase()) + k("→", "read")) + `</span>`);
     return parts.join("");
   }
   // What the ticks are for, said where they are ticked: context shapes the
@@ -2185,9 +2203,12 @@ function libMenuHtml() {
   const style = (s) => `<button type="button" data-style="${s}" aria-pressed="${currentMode === s}">${STYLE_NAMES[s]}</button>`;
   const left = usageData.limit - usageData.count;
   return `<div class="pm-lib-menu" role="menu" aria-label="Library menu">` +
-    `<div class="pm-lib-menu-group"><div class="pm-lib-menu-cap">Rewrite style for ⊕</div>` +
-    `<div class="pm-lib-views pm-lib-views-wide" role="group" aria-label="Default rewrite style">${STYLES.map(style).join("")}</div></div>` +
-    `<hr>` +
+    // Simple mode sets its style on the chat box's ⋯; a second picker here,
+    // for the classic ⊕'s style, would be a third place to ask the same thing.
+    (simpleMode ? "" :
+      `<div class="pm-lib-menu-group"><div class="pm-lib-menu-cap">Rewrite style for ⊕</div>` +
+      `<div class="pm-lib-views pm-lib-views-wide" role="group" aria-label="Default rewrite style">${STYLES.map(style).join("")}</div></div>` +
+      `<hr>`) +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="voice">Voice input<span>${MOD_SHIFT}V</span></button>` +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="shortcuts">Keyboard shortcuts<span>?</span></button>` +
     `<button type="button" class="pm-lib-mi" role="menuitem" data-act="privacy">Privacy settings…</button>` +
@@ -2550,7 +2571,10 @@ function libAct(act, i) {
   // several can be picked in a row; putting its text in the chat box is the
   // row's Insert button, or ⌘↵. A past rewrite cannot be context (the server
   // looks context up among saved prompts), so its row still inserts.
-  if (act === "primary") act = it?.kind === "saved" ? "attach" : "insert";
+  if (act === "primary") act = it?.kind === "saved" && !simpleMode ? "attach" : "insert";
+  // Simple mode: a click puts the prompt in the chat box, which is what
+  // people reach for a saved prompt to do. Context is the row menu's "Use as
+  // context", one step further in, as everything past Improve is there.
   switch (act) {
     case "insert":
       if (!it) return;
@@ -2892,6 +2916,11 @@ let keyMapReturn = null;
 function keyMapHere() {
   const card = document.getElementById("pm-card");
   if (panelOpen) return "In the library";
+  if (simpleMode) {
+    if (slash || (composerHasFocus() && simple.phase !== "done")) return "In the chat box";
+    if (simple.phase === "done" || simple.phase === "streaming") return "After Improve";
+    return "Anywhere on the page";
+  }
   if (card && card.contains(document.activeElement)) return "On the card";
   if (slash || composerHasFocus()) return "In the chat box";
   if (cardState !== "idle") return "When a draft is waiting in the pill";
@@ -2902,6 +2931,7 @@ const KEYMAP_HERE_LINE = {
   "Anywhere on the page": "These work wherever you are",
   "In the chat box": "You are in the chat box",
   "When a draft is waiting in the pill": "A draft is waiting in the pill",
+  "After Improve": "A rewrite is in the chat box",
   "On the card": "You are on the rewrite card",
   "In the library": "You are in the library",
 };
@@ -4957,6 +4987,46 @@ function showDiffModal(result) {
 
   const original = escHtml(result.original || cardOriginal);
   const enhanced = escHtml(result.enhanced);
+
+  // Simple mode's Compare. The rewrite is already in the chat box, so this
+  // card has nothing to decide: it shows what was typed above what is there
+  // now, and offers to keep it, put the original back, or save it. The
+  // classic card's Replace, styles and Discard all meant something else here
+  // (testers read "Replace draft" as a second rewrite), and it showed only the
+  // rewrite, which is the one text already on screen.
+  if (simpleMode && simple.versions.includes(result)) {
+    const label = STYLE_NAMES[result.mode] ? ` \u00b7 ${STYLE_NAMES[result.mode]}` : "";
+    const card = openCard(
+      cardHead(`Compare${label}`) +
+      `<div class="pm-cmp">` +
+        `<div class="pm-cmp-pane"><div class="pm-cmp-label">You wrote</div><div class="pm-cmp-text pm-cmp-was">${original}</div></div>` +
+        `<div class="pm-cmp-pane pm-cmp-now"><div class="pm-cmp-label">In the chat box now</div><div class="pm-card-text pm-cmp-text">${enhanced}</div></div>` +
+      `</div>` +
+      cardUsedHtml(result) +
+      cardFoot([
+        `<button class="pm-card-act pm-card-btn pm-card-primary" id="pm-cmp-keep">Keep the rewrite</button>`,
+        `<button class="pm-card-act pm-card-btn" id="pm-cmp-undo">Put mine back</button>`,
+        isAnonymous() ? "" :
+          `<button class="pm-card-act pm-card-btn" id="pm-card-save" data-pm-tip="Save it to your library" data-pm-key="${CMD_KEY}S">Save</button>`,
+      ]));
+    card.classList.add("pm-card-compare");
+    card.classList.remove("pm-card-stale");
+    card.querySelectorAll(".pm-cmp-text").forEach((el) => { watchScrollable(el); markScrollable(el); });
+    document.getElementById("pm-card-min")?.addEventListener("click", hideCard);
+    document.getElementById("pm-cmp-keep")?.addEventListener("click", hideCard);
+    document.getElementById("pm-cmp-undo")?.addEventListener("click", () => { hideCard(); simpleUndo(); });
+    document.getElementById("pm-card-save")?.addEventListener("click", saveCard);
+    document.getElementById("pm-card-used-toggle")?.addEventListener("click", (e) => {
+      cardUsedOpen = !cardUsedOpen;
+      e.currentTarget.setAttribute("aria-expanded", String(cardUsedOpen));
+      const list = document.getElementById("pm-card-used-list");
+      if (list) list.hidden = !cardUsedOpen;
+      positionCard();
+    });
+    renderPill();
+    return;
+  }
+
   const body = `<div class="pm-card-comparison">` +
     `<div class="pm-card-reading"><div class="pm-card-pane-label">Selected: ${cardShowingOriginal ? "Original" : "Rewrite"}</div>` +
     `<div class="pm-card-text${cardShowingOriginal ? " pm-card-original" : ""}">${cardShowingOriginal ? original : enhanced}</div></div>` +
@@ -6473,9 +6543,9 @@ function showVoiceTranscriptReview(transcript, transcriptionTime) {
       <label class="pm-voice-transcript-label" for="pm-voice-transcript">Transcript</label>
       <textarea id="pm-voice-transcript" class="pm-voice-transcript" rows="7" spellcheck="true">${escHtml(transcript)}</textarea>
       <div class="pm-voice-actions">
-        <button class="pm-btn pm-btn-secondary" id="pm-voice-draft" type="button">Use as draft</button>
+        <button class="pm-btn pm-btn-secondary" id="pm-voice-draft" type="button">${simpleMode ? "Put in chat box" : "Use as draft"}</button>
         <button class="pm-btn pm-btn-secondary" id="pm-voice-cancel" type="button">Discard</button>
-        <button class="pm-btn pm-btn-primary" id="pm-voice-enhance" type="button">Enhance transcript</button>
+        <button class="pm-btn pm-btn-primary" id="pm-voice-enhance" type="button">${simpleMode ? "Improve it" : "Enhance transcript"}</button>
       </div>
     </div>
   `;
@@ -6486,8 +6556,19 @@ function showVoiceTranscriptReview(transcript, transcriptionTime) {
     await applyOrFallback(value, "Transcript added to the chat input.");
     cleanupVoice();
   });
-  document.getElementById("pm-voice-enhance")?.addEventListener("click", () => {
+  document.getElementById("pm-voice-enhance")?.addEventListener("click", async () => {
     const value = document.getElementById("pm-voice-transcript")?.value.trim() || "";
+    if (simpleMode) {
+      // The same flow as typing: the transcript goes in the box and Improve
+      // rewrites it there, so Undo gives back the transcript. The classic
+      // card would be the one place simple mode still opened it.
+      if (value.length < 3) { showToast("Transcript is too short to improve.", "error"); return; }
+      if (!(await applyOrFallback(value, null))) return;
+      cleanupVoice();
+      await nextFrame();
+      handleEnhance();
+      return;
+    }
     void enhanceVoiceTranscript(value);
   });
   requestAnimationFrame(() => document.getElementById("pm-voice-transcript")?.focus());
@@ -6753,7 +6834,9 @@ try {
 /** Turn simple mode on or off here, and with `persist` in every tab. */
 function setSimpleMode(on, persist = true) {
   on = Boolean(on);
-  if (persist) storageSet({ [SIMPLE_KEY]: on });
+  // A deliberate switch is remembered as such, so an update never moves
+  // someone who chose the classic controls back off them.
+  if (persist) storageSet({ [SIMPLE_KEY]: on, pm_classic_chosen: !on });
   if (!on && simpleMode) simpleForget();
   simpleMode = on;
   closeSimpleMenu();
@@ -7096,6 +7179,7 @@ function simpleFinish(result) {
     simple.phase = "done";
     simpleSyncCard(result);
     placePill();
+    maybeTipReuse(simple.original);
   });
 }
 
@@ -7294,24 +7378,25 @@ const simpleMenuItem = (act, label, key = "") =>
   `<button type="button" class="pm-simple-mi" role="menuitem" data-act="${act}">` +
   `<span>${escHtml(label)}</span>${key ? `<kbd>${escHtml(key)}</kbd>` : ""}</button>`;
 
+/**
+ * Everything that is not Improve. One Style row, not two: "This rewrite" and
+ * "Style for Improve" side by side read as the same choice asked twice. A
+ * style is the default for every Improve, and picking one while a rewrite is
+ * in the box also rewrites it in that style (a version already made comes
+ * back for free). Compare is on the bar already, so it is not repeated here,
+ * and the library is one entry, which says when prompts are attached.
+ */
 function simpleMenuHtml() {
-  const on = simple.versions[simple.index]?.mode;
-  const seg = (act, s, pressed, made) =>
-    `<button type="button" role="menuitemradio" aria-checked="${pressed}" data-act="${act}" data-style="${s}" ` +
-    `title="${escHtml(STYLE_HINTS[s])}">${STYLE_NAMES[s]}${made ? '<span class="pm-simple-made" title="Made already: switching is free"></span>' : ""}</button>`;
-  const n = selectedIds.size;
-  const thisOne = simple.phase === "done"
-    ? `<div class="pm-simple-menu-cap">This rewrite</div>` +
-      `<div class="pm-simple-seg" role="group" aria-label="Versions of this rewrite">` +
-      STYLES.map((s) => seg("version", s, s === on, s !== on && simple.versions.some((v) => v.mode === s))).join("") + `</div>` +
-      simpleMenuItem("compare", cardExpanded ? "Hide the comparison" : "Compare with your original", `${MOD_SHIFT}P`) +
-      simpleMenuItem("save", "Save to your library", `${CMD_KEY}S`) + `<hr>`
-    : "";
+  const done = simple.phase === "done";
+  const on = done ? simple.versions[simple.index]?.mode : simpleStyle;
+  const seg = (s) => {
+    const made = done && s !== on && simple.versions.some((v) => v.mode === s);
+    return `<button type="button" role="menuitemradio" aria-checked="${s === on}" data-act="style" data-style="${s}" ` +
+      `title="${escHtml(STYLE_HINTS[s])}">${STYLE_NAMES[s]}` +
+      `${made ? '<span class="pm-simple-made" title="Made already: switching is free"></span>' : ""}</button>`;
+  };
   if (isAnonymous()) {
-    return (simple.phase === "done"
-      ? simpleMenuItem("compare", cardExpanded ? "Hide the comparison" : "Compare with your original", `${MOD_SHIFT}P`) + `<hr>`
-      : "") +
-      `<div class="pm-simple-menu-note">Free without an account: Quick rewrites, ${usageData.limit || 10} a day, nothing saved.</div>` +
+    return `<div class="pm-simple-menu-note">Free without an account: Quick rewrites, ${usageData.limit || 10} a day, nothing saved.</div>` +
       simpleMenuItem("signin", "Sign in with Google for more") +
       `<div class="pm-simple-menu-note pm-simple-menu-sub">More rewrites, the Deep and Creative styles, and a library you can reuse with //.</div>` +
       `<hr>` +
@@ -7320,13 +7405,13 @@ function simpleMenuHtml() {
       `<hr>` +
       simpleMenuItem("classic", "Switch to the classic controls");
   }
-  return thisOne +
-    `<div class="pm-simple-menu-cap">Style for Improve</div>` +
-    `<div class="pm-simple-seg" role="group" aria-label="Style for Improve">` +
-    STYLES.map((s) => seg("style", s, s === simpleStyle, false)).join("") + `</div>` +
-    simpleMenuItem("context", n ? `Context: ${n} saved prompt${n === 1 ? "" : "s"} attached` : "Attach saved prompts as context") +
+  const n = selectedIds.size;
+  return (done ? simpleMenuItem("save", "Save this rewrite to your library", `${CMD_KEY}S`) + `<hr>` : "") +
+    `<div class="pm-simple-menu-cap">Style</div>` +
+    `<div class="pm-simple-seg" role="group" aria-label="Style">${STYLES.map(seg).join("")}</div>` +
+    `<div class="pm-simple-menu-note pm-simple-menu-sub">${escHtml(STYLE_HINTS[on] || "")}</div>` +
     `<hr>` +
-    simpleMenuItem("library", "Library", `${MOD_SHIFT}L`) +
+    simpleMenuItem("library", n ? `Library \u00b7 ${n} attached as context` : "Library", `${MOD_SHIFT}L`) +
     simpleMenuItem("voice", "Voice input", `${MOD_SHIFT}V`) +
     simpleMenuItem("shortcuts", "Keyboard shortcuts", "?") +
     simpleMenuItem("settings", "Settings") +
@@ -7388,11 +7473,18 @@ function onSimpleMenuClick(e) {
   e.stopPropagation();
   const act = b.dataset.act, style = b.dataset.style;
   if (act === "style") {
-    // A setting, not an action: the menu stays, showing the new choice.
     simpleStyle = style;
     storageSet({ [SIMPLE_STYLE_KEY]: style });
-    b.closest(".pm-simple-seg").querySelectorAll("button").forEach((x) =>
-      x.setAttribute("aria-checked", String(x.dataset.style === style)));
+    // With a rewrite in the box, the new style applies to it now too.
+    if (simple.phase === "done" && simple.versions[simple.index]?.mode !== style) {
+      closeSimpleMenu(true);
+      simpleRerun(style);
+      return;
+    }
+    // Otherwise a setting: the menu stays, showing the new choice.
+    const menu = document.getElementById("pm-simple-menu");
+    if (menu) menu.innerHTML = simpleMenuHtml();
+    menu?.querySelector(`[data-act="style"][data-style="${style}"]`)?.focus({ preventScroll: true });
     return;
   }
   closeSimpleMenu(act === "version");
@@ -7531,11 +7623,40 @@ function tipDone(id) {
   if (activeTip?.id === id) hideTip();
 }
 
+// The tips simple mode shows besides its own (maybeTipSimple): the ones about
+// reusing saved prompts, which is the same in both. The rest are about the ⊕
+// and its card.
+const SIMPLE_MODE_TIPS = new Set(["slash", "reuse"]);
+
 function tipAllowed(id) {
-  // Simple mode has one hint, its own (maybeTipSimple); none of these.
-  return !simpleMode && tips.loaded && !tips.off && !tips.seen[id] && (tips.shows[id] || 0) < TIP_MAX_SHOWS &&
-    !cardExpanded && !panelOpen && !slash && !overlayHasInput() &&
-    Boolean(document.getElementById("pm-trigger"));
+  if (simpleMode && !SIMPLE_MODE_TIPS.has(id)) return false;
+  return tips.loaded && !tips.off && !tips.seen[id] && (tips.shows[id] || 0) < TIP_MAX_SHOWS &&
+    !cardExpanded && !panelOpen && !slash && !overlayHasInput() && !simpleMenuOpen &&
+    Boolean(anchorEl());
+}
+
+/**
+ * After Improve on a long draft: the background people retype in every long
+ * chat is usually in drafts like this one. Once: save it, and // brings it
+ * back anywhere. Without an account, the way to that is signing in.
+ */
+const REUSE_MIN_CHARS = 200;
+function maybeTipReuse(original) {
+  // It says what the // tip says, about this draft, so it takes that one's place.
+  if (norm(original).length < REUSE_MIN_CHARS || !tipAllowed("reuse") || (activeTip && activeTip.id !== "slash")) return;
+  const anon = isAnonymous();
+  showTip("reuse", {
+    title: "Typing this background often?",
+    body: "Save it once, then type <b>//</b> in any chat to drop it in, instead of writing it again.",
+    actions: anon
+      ? [{ label: "Sign in to save", primary: true, run: () => simpleSignIn() }, { label: "Not now" }]
+      : [{ label: "Save it", primary: true, run: () => showEditModal({ content: original.trim(), title: "", tags: [] }, {
+            heading: "Save for reuse",
+            saved: "Saved. Type // and a few letters of it in any chat to drop it in.",
+          }) },
+         { label: "Not now" }],
+    autoHideMs: 20000,
+  });
 }
 
 const TIP_X_SVG = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"/></svg>';
@@ -7616,6 +7737,24 @@ function positionTip() {
   el.dataset.side = above ? "above" : "below";
   const arrow = Math.max(14, Math.min(w - 24, p.left + p.width / 2 - left - 5));
   el.style.setProperty("--pm-tip-arrow", `${Math.round(arrow)}px`);
+}
+
+/**
+ * Once, after an update moved someone from the corner ⊕ to the chat box's
+ * Improve: what moved, and the way back. Shown even with tips off, since it
+ * explains a change the user did not ask for.
+ */
+async function maybeTipWhatsNew() {
+  const r = await new Promise((resolve) => storageGet("pm_whats_new", resolve));
+  if (r.pm_whats_new !== "simple" || !simpleMode || !findComposer() || !document.getElementById("pm-simple")) return false;
+  storageSet({ pm_whats_new: "" });
+  showTip("whatsnew", {
+    title: "Improve has moved to the chat box",
+    body: `One click rewrites your draft right in the box, and <b>Undo</b> puts it back. Your library, styles and voice are under <b>⋯</b>. Prefer the old ⊕? ⋯ → Switch to the classic controls.`,
+    actions: [{ label: "Got it" }],
+    hint: true,
+  });
+  return true;
 }
 
 /** Tip 1: what the ⊕ is. Shown on a chat page until the first rewrite. */
@@ -7722,7 +7861,7 @@ function setupTips() {
     // A beat after the page settles, so the tip lands next to the pill in its
     // final place rather than chasing it.
     clearTimeout(meetTimer);
-    meetTimer = setTimeout(maybeTipMeet, 2200);
+    meetTimer = setTimeout(() => { maybeTipWhatsNew().then((shown) => { if (!shown) maybeTipMeet(); }); }, 2200);
   });
   window.addEventListener("resize", () => positionTip());
   document.addEventListener("focusin", () => { if (!activeTip) maybeTipSlash(); }, true);

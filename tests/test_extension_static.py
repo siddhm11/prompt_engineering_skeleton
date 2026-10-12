@@ -330,7 +330,8 @@ def test_the_stale_footer_keeps_every_action_that_still_works():
     must not be offered first.
     """
     body = _function_bodies(CONTENT_JS, r"showDiffModal")["showDiffModal"]
-    actions = body[body.index("const actions ="):body.index("openCard(")]
+    start = body.index("const actions =")
+    actions = body[start:body.index("openCard(", start)]
     for el in ("pm-card-toggle", "pm-card-save", "pm-card-discard"):
         assert el in actions, f"{el} is missing from the one shared footer"
     lead = body[body.index("const lead ="):body.index("const actions =")]
@@ -1565,7 +1566,8 @@ def test_the_library_keys_are_listed_the_way_they_now_work():
     assert '"Add it to context, or take it out"' in lib
     assert 'CMD_ENTER], what: "Insert it into the chat box"' in lib
     assert 'libAct(mod && it?.kind === "saved" ? "insert" : "primary")' in CONTENT_JS
-    assert 'if (act === "primary") act = it?.kind === "saved" ? "attach"' in CONTENT_JS
+    assert 'if (act === "primary") act = it?.kind === "saved" && !simpleMode ? "attach"' in CONTENT_JS, \
+        "classic: a click attaches; simple mode: a click inserts"
 
 
 def test_the_sheet_does_not_promise_tab_to_insert():
@@ -1782,7 +1784,10 @@ def test_simple_mode_is_a_stored_flag_on_for_new_installs_only():
     assert "pm_simple_mode: true" in install.split("activateExistingTabs()", 1)[0], \
         "the flag must be set before the existing tabs get their content script"
     update = BACKGROUND_JS.split('if (reason === "update") {', 1)[1].split('if (reason !== "install")', 1)[0]
-    assert "r.pm_simple_mode === undefined" in update and "pm_simple_mode: false" in update
+    # Updates move people off the corner ⊕ once (they are the ones who found
+    # it hard), unless they chose the classic controls themselves.
+    assert "if (r.pm_simple_v === 2 || r.pm_classic_chosen) return;" in update
+    assert "pm_simple_mode: true, pm_simple_v: 2" in update
 
 
 def test_every_way_into_a_rewrite_honours_the_flag():
@@ -1856,18 +1861,20 @@ def test_simple_mode_never_opens_the_card_on_its_own():
 
 
 def test_every_old_feature_is_one_menu_away():
-    """Library, shortcuts, styles, versions, context, voice and settings are
-    all behind ⋯, and each item does something."""
+    """Library (and with it context), shortcuts, style, voice, save and
+    settings are behind ⋯, and each item does something. One Style row: with
+    a rewrite in the box it redoes it. Compare is on the bar, not repeated."""
     menu = _function_bodies(CONTENT_JS, r"simpleMenuHtml")["simpleMenuHtml"]
     click = _function_bodies(CONTENT_JS, r"onSimpleMenuClick")["onSimpleMenuClick"]
-    for act, does in (("library", "togglePanel(true)"), ("context", "togglePanel(true)"),
+    for act, does in (("library", "togglePanel(true)"),
                       ("shortcuts", "openShortcuts()"), ("voice", "toggleVoice()"),
-                      ("settings", "openSettings()"), ("version", "simpleRerun(style)"),
-                      ("compare", "simpleCompare()"), ("save", "openSaveForm("),
+                      ("settings", "openSettings()"), ("save", "openSaveForm("),
                       ("classic", "setSimpleMode(false)")):
         assert f'"{act}"' in menu, f"⋯ has no {act}"
         assert f'case "{act}"' in click and does in click, f"⋯ {act} does nothing"
-    assert '"style"' in menu and "simpleStyle = style;" in click
+    assert 'data-act="style"' in menu and "simpleStyle = style;" in click and "simpleRerun(style)" in click
+    assert "attached as context" in menu, "the library entry says when prompts are attached"
+    assert 'case "compare": simpleCompare(); return;' in _function_bodies(CONTENT_JS, r"onSimpleClick")["onSimpleClick"]
     # And the way back in, from the classic library's menu.
     assert 'data-act="simple"' in _function_bodies(CONTENT_JS, r"libMenuHtml")["libMenuHtml"]
     assert 'case "simple": closeLibrary(); setSimpleMode(true); return;' in CONTENT_JS
@@ -1882,7 +1889,8 @@ def test_simple_mode_hides_the_pill_and_its_chips():
 
 def test_simple_mode_shows_one_tip_and_no_timed_ones():
     allowed = _function_bodies(CONTENT_JS, r"tipAllowed")["tipAllowed"]
-    assert "return !simpleMode &&" in allowed, "the classic tips must stay off in simple mode"
+    assert "if (simpleMode && !SIMPLE_MODE_TIPS.has(id)) return false;" in allowed, \
+        "the classic tips stay off in simple mode; only the reuse ones are shared"
     assert "if (simpleMode) return;" in _function_bodies(CONTENT_JS, r"maybeTipMeet")["maybeTipMeet"]
     assert "if (simpleMode ||" in _function_bodies(CONTENT_JS, r"cardTipHtml")["cardTipHtml"]
     tip = _function_bodies(CONTENT_JS, r"maybeTipSimple")["maybeTipSimple"]

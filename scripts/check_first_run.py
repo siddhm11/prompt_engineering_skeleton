@@ -329,6 +329,21 @@ def main():
               "the menu offers what signing in adds, not controls that need it")
         prof.close()
 
+        # ── Updated from the corner ⊕: told once what moved ─────────────
+        prof = Profile(p, {"pm_data_consent_v1": True, "pm_simple_mode": True, "pm_simple_v": 2,
+                           "pm_whats_new": "simple", "byok_provider": "groq", "byok_key": "gsk_test",
+                           "pm_stats": {"rewrites": 5}})
+        page = prof.chat("#pm-simple")
+        wait_tip(page, "whatsnew")
+        check("Improve has moved to the chat box" in page.inner_text("#pm-tip") and "classic" in page.inner_text("#pm-tip"),
+              "someone moved off the ⊕ by an update is told what moved, and the way back")
+        check(prof.get("pm_whats_new") == "", "once")
+        page.close()
+        page = prof.chat("#pm-simple")
+        page.wait_for_timeout(3200)
+        check(tip(page) != "whatsnew", "and not again")
+        prof.close()
+
         # ── Classic controls, first use with a key: meet → card → save ───
         prof = Profile(p, {**CLASSIC, "pm_data_consent_v1": True, "byok_provider": "groq", "byok_key": "gsk_test", "pm_mode": "deep"})
         page = prof.chat()

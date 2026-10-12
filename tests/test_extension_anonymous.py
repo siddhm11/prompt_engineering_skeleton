@@ -88,3 +88,26 @@ def test_simple_mode_still_teaches_slash():
     """Simple mode is the default now; the // tip must not be classic-only."""
     body = _body(CONTENT, "tipsOnComposerChanged")
     assert "if (simpleMode) { maybeTipSimple(); if (!activeTip) maybeTipSlash(); return; }" in body
+
+
+WORKER_SRC = WORKER
+
+
+def test_an_update_moves_people_off_the_corner_plus_once_unless_they_chose_it():
+    upd = WORKER_SRC[WORKER_SRC.index('if (reason === "update")'):WORKER_SRC.index('if (reason !== "install") return;')]
+    assert '["pm_simple_v", "pm_classic_chosen"]' in upd
+    assert "if (r.pm_simple_v === 2 || r.pm_classic_chosen) return;" in upd
+    assert 'pm_whats_new: "simple"' in upd
+    assert "pm_classic_chosen: !on" in _body(CONTENT, "setSimpleMode"), "a deliberate switch is remembered"
+
+
+def test_voice_in_simple_mode_goes_through_improve():
+    review = _body(CONTENT, "showVoiceTranscriptReview")
+    assert 'simpleMode ? "Improve it" : "Enhance transcript"' in review
+    assert "applyOrFallback(value, null)" in review and "handleEnhance();" in review
+
+
+def test_simple_mode_tips_are_an_explicit_list():
+    allowed = _body(CONTENT, "tipAllowed")
+    assert "if (simpleMode && !SIMPLE_MODE_TIPS.has(id)) return false;" in allowed
+    assert 'new Set(["slash", "reuse"])' in CONTENT
