@@ -297,6 +297,62 @@
 
 .pm-trigger.pm-pill-open .pm-pill-glyph { width: 0; opacity: 0; }
 
+/* ── Idle: sized to the screen, with an electron now and then ─────────────
+   32px everywhere read as too small on a large monitor, where the chat box
+   is wider and the disc further from it. Idle, the disc follows the screen:
+   38px up to a laptop, growing to 50px by a 2560px display. Open, with a
+   draft in it, the capsule keeps its slim 32px: it carries text then, and
+   the comment above says why it is thinner than the host's buttons. */
+.pm-trigger {
+    --pm-pill-size: clamp(38px, calc(16px + 1.6vw), 50px);
+}
+.pm-trigger:not(.pm-pill-open) {
+    height: var(--pm-pill-size);
+    min-width: var(--pm-pill-size);
+    border-radius: calc(var(--pm-pill-size) / 2);
+}
+.pm-trigger:not(.pm-pill-open) .pm-pill-glyph {
+    width: calc(var(--pm-pill-size) - 2px);
+    height: calc(var(--pm-pill-size) - 2px);
+}
+.pm-trigger:not(.pm-pill-open) .pm-pill-glyph svg {
+    width: calc(var(--pm-pill-size) * 0.5);
+    height: calc(var(--pm-pill-size) * 0.5);
+}
+
+/* Every 15 seconds a point of mint light sweeps twice round the ring, a comet
+   with a tail, like an electron round the ⊕, and rests. A conic gradient
+   masked to the rim and rotated: no script, no timers, only while idle (a
+   draft has its own status light), and never for reduced motion. */
+.pm-trigger[data-state="idle"]::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: 50%;
+    pointer-events: none;
+    background: conic-gradient(from 0deg,
+        rgba(80, 200, 168, 0) 0deg 250deg,
+        rgba(80, 200, 168, 0.35) 320deg,
+        rgba(80, 200, 168, 0.95) 352deg,
+        #d9fff5 358deg,
+        rgba(80, 200, 168, 0) 360deg);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    filter: drop-shadow(0 0 3px rgba(80, 200, 168, 0.8));
+    opacity: 0;
+    animation: pm-pill-orbit 15s linear 4s infinite;
+}
+@keyframes pm-pill-orbit {
+    0%   { transform: rotate(0deg);   opacity: 0; }
+    1.5% { opacity: 1; }
+    11%  { transform: rotate(720deg); opacity: 1; }
+    13%  { transform: rotate(790deg); opacity: 0; }
+    100% { transform: rotate(790deg); opacity: 0; }
+}
+/* Pointing at it, or dragging it, is not the moment for a show. */
+.pm-trigger:hover::after,
+.pm-trigger.pm-pill-dragging::after { animation-play-state: paused; opacity: 0; }
+
 /* The status light takes the lead position the glyph vacated. The halo is a
    spread-only shadow rather than a second element, so it costs nothing in
    the flex row and cannot drift out of alignment with the dot. */
@@ -3109,6 +3165,7 @@
 @media (prefers-reduced-motion: reduce) {
     .pm-tip { transition: none; }
     .pm-trigger.pm-pill-hint { animation: none; }
+    .pm-trigger::after { display: none; }
 }
 
 /* Windows draws classic 17px scrollbars; on the card and its lists they took
