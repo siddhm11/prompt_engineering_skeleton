@@ -203,12 +203,18 @@ let promptTrackingEnabled = false;
 // that one request, and is not retained as a profile. It stays on by default
 // and is disclosed and toggleable in the panel.
 let contextEnabled = true;
+// Matching the library on its own: saved prompts and past rewrites the server
+// finds similar to the draft. Not a privacy setting (nothing new leaves the
+// page), so separate from conversation context: a tester turned that off and
+// still got a past prompt matched in. On by default.
+let autoContextEnabled = true;
 let dataConsent = false;
 
 // Load privacy preferences
-storageGet(["pm_tracking", "pm_context", "pm_data_consent_v1", "pm_mode"], (result) => {
+storageGet(["pm_tracking", "pm_context", "pm_auto_context", "pm_data_consent_v1", "pm_mode"], (result) => {
   promptTrackingEnabled = result.pm_tracking === true;   // default: off
   contextEnabled = result.pm_context !== false;          // default: on
+  autoContextEnabled = result.pm_auto_context !== false; // default: on
   dataConsent = result.pm_data_consent_v1 === true;
   setDefaultStyle(result.pm_mode, false);
 });
@@ -218,6 +224,7 @@ try {
     if (changes.pm_data_consent_v1) dataConsent = changes.pm_data_consent_v1.newValue === true;
     if (changes.pm_tracking) promptTrackingEnabled = changes.pm_tracking.newValue === true;
     if (changes.pm_context) contextEnabled = changes.pm_context.newValue !== false;
+    if (changes.pm_auto_context) autoContextEnabled = changes.pm_auto_context.newValue !== false;
     // Picked in another tab: this one's next ⊕ should agree with it.
     if (changes.pm_mode) setDefaultStyle(changes.pm_mode.newValue, false);
   });
@@ -405,6 +412,7 @@ async function enhancePrompt(prompt, selectedPromptIds) {
     mode: currentMode,
     conversation_context: conversation,
     tracking_enabled: promptTrackingEnabled,
+    auto_context: autoContextEnabled,
   };
   if (selectedPromptIds && selectedPromptIds.length > 0) {
     body.selected_prompt_ids = selectedPromptIds;
@@ -428,6 +436,7 @@ async function enhancePromptStream(prompt, selectedPromptIds, onToken, onDone, i
     mode: style,
     conversation_context: conversation,
     tracking_enabled: promptTrackingEnabled,
+    auto_context: autoContextEnabled,
   };
   if (selectedPromptIds && selectedPromptIds.length > 0) {
     body.selected_prompt_ids = selectedPromptIds;
@@ -2264,6 +2273,7 @@ function libBodyHtml() {
     return `<div class="pm-lib-page">` +
       row("pm-tracking-toggle", promptTrackingEnabled, "Prompt tracking", "Logs the prompts you send on these sites to improve future suggestions.") +
       row("pm-context-toggle", contextEnabled, "Conversation context", "Reads recent messages in this chat when you ask for a rewrite, for that request only.") +
+      row("pm-auto-context-toggle", autoContextEnabled, "Match my library automatically", "Adds saved prompts and past rewrites that look related to your draft. Prompts you attach are always used.") +
       row("pm-slash-toggle", slashEnabled, "Type // for saved prompts", "Opens your saved prompts at the cursor in the chat box.") +
       row("pm-select-save-toggle", selectSaveEnabled, "Save selected text", "Select text on the page, such as an answer, to save it to your library as context.") +
       row("pm-tips-toggle", !tips.off, "Tips on the page", "Short hints the first time you use each feature.") +
@@ -2864,6 +2874,7 @@ function onLibraryChange(e) {
   const id = e.target.id;
   if (id === "pm-tracking-toggle") { promptTrackingEnabled = e.target.checked; storageSet({ pm_tracking: promptTrackingEnabled }); }
   if (id === "pm-context-toggle") { contextEnabled = e.target.checked; storageSet({ pm_context: contextEnabled }); }
+  if (id === "pm-auto-context-toggle") { autoContextEnabled = e.target.checked; storageSet({ pm_auto_context: autoContextEnabled }); }
   if (id === "pm-slash-toggle") { slashEnabled = e.target.checked; storageSet({ pm_slash: slashEnabled }); }
   if (id === "pm-select-save-toggle") { selectSaveEnabled = e.target.checked; storageSet({ [SELECT_SAVE_KEY]: selectSaveEnabled }); if (!selectSaveEnabled) hideSelectSave(); }
   if (id === "pm-tips-toggle") { tips.off = !e.target.checked; storageSet({ pm_tips_off: tips.off }); if (tips.off) hideTip(); }
