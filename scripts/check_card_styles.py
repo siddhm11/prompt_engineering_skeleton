@@ -244,6 +244,13 @@ def main():
             return ev("Boolean(document.querySelector('#pm-card.pm-card-visible')) && cardExpanded")
 
         ev("FAKE.calls = []; H.type(H.ORIG)")
+        if ev("IS_MAC"):
+            page.focus("#composer")
+            page.keyboard.press("Alt+Shift+E")
+            page.wait_for_timeout(300)
+            check(ev("FAKE.calls") == [] and not ev("cardExpanded"),
+                  "on a Mac, Alt+Shift+E is left to type its character: ⌘⇧E is the key there")
+            ev("H.type(H.ORIG)")
         shortcut()
         wait_title("Rewrite · Deep")
         check(ev("FAKE.calls") == ["deep"], "the shortcut rewrites a new draft")

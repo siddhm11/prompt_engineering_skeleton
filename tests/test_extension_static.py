@@ -1024,8 +1024,9 @@ def test_the_pill_click_does_not_respend_quota_on_the_same_text():
 
 def test_the_shortcut_shows_a_draft_but_never_hides_it():
     """Pressed twice on one draft, the shortcut used to hide the card it had
-    just shown. Both of its paths ask handleEnhance to reveal."""
-    assert CONTENT_JS.count("handleEnhance({ reveal: true })") == 2
+    just shown. All three of its paths (Chrome's command, the page's own
+    listener, and Alt+Shift+E off a Mac) ask handleEnhance to reveal."""
+    assert CONTENT_JS.count("handleEnhance({ reveal: true })") == 3
     body = _function_bodies(CONTENT_JS, r"reopenDraftIfRelevant")["reopenDraftIfRelevant"]
     assert "if (reveal) revealCard();" in body
     reveal = _function_bodies(CONTENT_JS, r"revealCard")["revealCard"]
@@ -1573,6 +1574,7 @@ def test_every_listed_chord_is_one_the_code_answers():
     for chord, handler in (
         ("${MOD_SHIFT}E", 'e.code === "KeyE"'),
         ("VOICE_KEY", 'voiceChord && e.code === "KeyV"'),
+        ("IMPROVE_ALT_KEY", 'if (!improveAltChord || e.code !== "KeyE" || e.repeat) return;'),
         ("${MOD_SHIFT}L", 'e.code === "KeyL"'),
         ("${MOD_SHIFT}P", 'e.code === "KeyP"'),
         ("CMD_ENTER", 'e.key === "Enter"'),

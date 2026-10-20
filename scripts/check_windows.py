@@ -115,6 +115,26 @@ def main():
         text = tip_text()
         check("⌘" not in text, f"the after-Replace tip has no Mac symbols: {text!r}")
 
+        # ── Alt+Shift+E: Improve where a site keeps Ctrl+Shift+E ──
+        load()
+        ev("FAKE.calls = []; H.type(H.ORIG)")
+        # A site that stops Ctrl/Alt+Shift chords on their way up, as Claude does.
+        ev("document.getElementById('composer').addEventListener('keydown', e => { if (e.shiftKey) e.stopPropagation(); }); 0")
+        page.focus("#composer")
+        page.keyboard.press("Alt+Shift+E")
+        page.wait_for_function("(document.querySelector('#pm-card .pm-card-title')?.textContent || '').includes('Rewrite')", timeout=6000)
+        check(ev("FAKE.calls") == ["deep"], "Alt+Shift+E rewrites on Windows, even on a site that stops the key")
+        check(ev("document.getElementById('composer').textContent") == ev("H.ORIG"), "and types nothing into the chat box")
+        page.keyboard.press("Alt+Shift+E")
+        page.wait_for_timeout(300)
+        check(ev("FAKE.calls") == ["deep"] and ev("cardExpanded"), "pressed again on the same draft it keeps the card, for free")
+        ev("closeCard()")
+        ev("openShortcuts()")
+        page.wait_for_timeout(200)
+        sheet = page.inner_text("#pm-keys") if page.locator("#pm-keys").count() else ""
+        check("Alt+Shift+E" in sheet, f"the shortcuts sheet lists it, got {sheet[:200]!r}")
+        page.keyboard.press("Escape")
+
         # ── The library's key hints ──
         ev("H.signIn()")
         load(fresh=False)
