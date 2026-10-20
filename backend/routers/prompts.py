@@ -492,6 +492,36 @@ def _voice_error(*, status_code: int, reason: str, detail: str, user_id: str, pl
     return JSONResponse(status_code=status_code, content={"error": reason, "detail": detail})
 
 
+def _voice_limit_error(*, user_id: str, byok_key: str, platform: str):
+    """
+    Refuse voice once today's rewrites are spent, as /enhance does; None if allowed.
+
+    Testers (20 October) still had voice after their 15th rewrite. Whisper
+    runs on the shared Groq key, whose free tier is the whole organisation's,
+    and nothing rationed it. A user with their own key is on the byok
+    allowance here as on /enhance. Transcription is not counted as a rewrite:
+    the rewrite that usually follows it is.
+    """
+    tier = "byok" if byok_key else get_user_tier(user_id)
+    allowed, used, limit, degraded = check_daily_limit(user_id, tier)
+    if allowed:
+        return None
+    AnalyticsService.record_failure(
+        operation="voice_transcribe", reason="daily_limit_reached",
+        platform=platform, user_id=user_id,
+    )
+    return JSONResponse(status_code=429, content={
+        "error": "daily_limit_reached",
+        "detail": (
+            f"You've used all {limit} free rewrites for today, so voice is off until tomorrow. "
+            "Add your own free API key in the extension settings for 1,000 per day."
+            if tier != "byok" else f"Daily limit of {limit} reached."
+        ),
+        "used": used, "limit": limit, "tier": tier, "degraded": degraded,
+        "byok_available": tier != "byok",
+    })
+
+
 def _transcribe_voice_audio(
     *,
     audio: UploadFile,
@@ -501,6 +531,10 @@ def _transcribe_voice_audio(
     recording_duration_seconds: float,
     user_id: str,
 ):
+    # Before anything is read or sent to Whisper.
+    limited = _voice_limit_error(user_id=user_id, byok_key=byok_key, platform=platform)
+    if limited is not None:
+        return None, limited
     content_type = (audio.content_type or "").lower()
     if content_type and not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
         return None, _voice_error(
