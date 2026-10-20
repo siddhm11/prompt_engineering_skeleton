@@ -11,7 +11,7 @@ from ..services.llm_service import get_groq_client, mark_groq_rate_limited
 from ..services.prompt_builder import LANGUAGE_NAMES
 
 # Needs to be imported inside the route or at top if no circular dependency
-from .prompts import enhance_prompt
+from .prompts import enhance_prompt, _voice_limit_error
 
 router = APIRouter()
 
@@ -52,6 +52,10 @@ def _transcribe_voice_audio(
     recording_duration_seconds: float,
     user_id: str,
 ):
+    # The same daily limit as the live routes in prompts.py (mounted first).
+    limited = _voice_limit_error(user_id=user_id, byok_key=byok_key, platform=platform)
+    if limited is not None:
+        return None, limited
     content_type = (audio.content_type or "").lower()
     if content_type and not (content_type.startswith("audio/") or content_type == "application/octet-stream"):
         return None, _voice_error(

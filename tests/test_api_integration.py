@@ -428,6 +428,39 @@ def test_voice_transcription_returns_an_editable_transcript_without_storing_audi
     assert b"a" * 20 not in str(event).encode()
 
 
+def test_voice_is_refused_once_todays_rewrites_are_spent(client, auth, monkeypatch):
+    # Testers still had voice after their 15th rewrite, on the shared key.
+    monkeypatch.setitem(settings.TIER_LIMITS, "free", 2)
+    _stub_llm(monkeypatch)
+    whisper = _FakeWhisperClient({"text": "draft a launch plan", "language": "en"})
+    monkeypatch.setattr(prompts, "get_groq_client", lambda _key=None: whisper)
+    upload = lambda **data: client.post(
+        "/voice-transcribe", headers=auth, data=data,
+        files={"audio": ("recording.webm", b"a" * 200, "audio/webm")},
+    )
+
+    assert upload().status_code == 200, "voice works while rewrites are left"
+    assert upload().status_code == 200, "and transcribing is not itself counted as a rewrite"
+    for i in range(2):
+        assert client.post("/enhance", json={"prompt": f"prompt {i}"}, headers=auth).status_code == 200
+    calls = len(whisper.audio.transcriptions.calls)
+
+    refused = upload()
+    assert refused.status_code == 429
+    body = refused.json()
+    assert body["error"] == "daily_limit_reached" and body["byok_available"] is True
+    assert "voice is off until tomorrow" in body["detail"]
+    assert len(whisper.audio.transcriptions.calls) == calls, "nothing is sent to Whisper"
+    assert in_memory_analytics_events[-1]["reason"] == "daily_limit_reached"
+
+    legacy = client.post("/voice-enhance", headers=auth,
+                         files={"audio": ("recording.webm", b"a" * 200, "audio/webm")})
+    assert legacy.status_code == 429 and legacy.json()["error"] == "daily_limit_reached", "the legacy route too"
+
+    own_key = upload(byok_provider="groq", byok_key="gsk_users_own")
+    assert own_key.status_code == 200, "a user with their own key is on their own allowance"
+
+
 def test_voice_transcription_rejects_anonymous_uploads(client):
     response = client.post(
         "/voice-transcribe",
