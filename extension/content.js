@@ -4785,14 +4785,14 @@ function hideCard() {
   renderPill();
 }
 
-// ── Tucked: a strip on the chat box while the user reads the conversation ──
+// ── Back to the page: the card goes to the pill ──
 //
 // The card sits on the chat box, which is also where the latest messages are.
 // Scrolling the conversation or clicking in it means the user went back to
-// the page: the card folds to a 40px strip that still says what the draft is
-// and still carries its verb. A click on the strip, ⌘⇧P, the pill or the
-// rewrite shortcut opens it again. Hover does not: the strip lies where the
-// pointer passes on its way to the chat box.
+// the page: the card goes to the pill, as the library closes (see
+// tuckOnPageGesture). ⌘⇧P, the pill or the rewrite shortcut opens it again.
+// The 40px strip below (tuckCard) is no longer reached from a page gesture;
+// it is left for removal after the store release.
 
 /** What counts as "the page" and not the extension's own surfaces. */
 const PM_SURFACES = "#pm-card, #pm-trigger, #pm-library, #pm-library-btn, #pm-help-btn, #pm-peek, #pm-save, #pm-keys, #pm-caret, #pm-rail, " +
@@ -4861,12 +4861,17 @@ function untuckCard() {
   setCardTucked(false);
 }
 
-/** A wheel turn or a press on the page, outside the extension: fold the card. */
+/**
+ * A wheel turn or a press on the page, outside the extension: the card goes
+ * to the pill, the way the library closes. It used to fold to a strip on the
+ * chat box, and testers read a strip that stayed as a card that would not
+ * close; the pill already holds the draft, with its verb and ×.
+ */
 function tuckOnPageGesture(e) {
-  if (!cardExpanded || cardTucked) return;
+  if (!cardExpanded) return;
   if (e.target.closest?.(PM_SURFACES)) return;
   if (document.getElementById("pm-card")?._pmEndGesture) return;   // mid drag or resize
-  tuckCard();
+  hideCard();
 }
 
 /** Show the card again for a draft the pill is holding. */
