@@ -137,3 +137,15 @@ def test_critical_slice_cannot_hide_behind_a_good_overall_average():
     target["retrieved_ids"] = []
     report = score_results(corpus, records)
     assert "entity_resolution recall@k below 0.75" in release_gate(report["summary"])
+
+
+def test_short_question_suite_is_well_formed_and_mostly_abstains():
+    short = json.loads((ROOT / "evals" / "context_retrieval_short_questions.json").read_text(encoding="utf-8"))
+    validate_corpus(short)
+    assert {item["user_id"] for item in short["memories"]}.isdisjoint(
+        {item["user_id"] for item in _corpus()["memories"]}
+    )
+    # The frame-only matches are the point of the suite; the related short
+    # questions keep it from passing by dropping everything.
+    assert sum(case["slice"] == "short_unrelated" for case in short["cases"]) >= 6
+    assert sum(case["slice"] == "short_related" for case in short["cases"]) >= 2

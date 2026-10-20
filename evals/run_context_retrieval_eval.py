@@ -13,6 +13,15 @@ try:
 except ImportError:
     from context_retrieval_eval import release_gate, score_results, validate_corpus
 
+# The rule production applies, imported rather than restated so the two
+# cannot drift. Run as a script, the repository root is not yet on the path.
+try:
+    from backend.services.context_gate import passive_match_keeps
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from backend.services.context_gate import passive_match_keeps
+
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CASES = HERE / "context_retrieval_cases.json"
@@ -35,7 +44,7 @@ def oracle_results(corpus: dict) -> list[dict]:
 
 def semantic_local_results(
     corpus: dict, model_name: str, *, saved_threshold: float,
-    passive_threshold: float,
+    passive_threshold: float, short_words: int = 4, strong_score: float = 0.65,
 ) -> list[dict]:
     """Run the production embedding family locally, without Qdrant or user data."""
     try:
@@ -71,10 +80,16 @@ def semantic_local_results(
             reverse=True,
         )
         # These are the production thresholds in MemoryService. Saved prompts
-        # and passive patterns use different collections and cut-offs.
+        # and passive patterns use different collections and cut-offs, and a
+        # passive pattern for a short draft must also pass the shared-word
+        # gate in context_gate.
         retrieved = [
             memory["id"] for score, memory in ranked
             if score >= (saved_threshold if memory["source"] == "saved" else passive_threshold)
+            and (memory["source"] == "saved" or passive_match_keeps(
+                case["query"], memory["content"], score,
+                short_words=short_words, strong_score=strong_score,
+            ))
         ][: case["k"]]
         records.append({
             "case_id": case["id"],
@@ -97,6 +112,8 @@ def main() -> int:
     parser.add_argument("--model", default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     parser.add_argument("--saved-threshold", type=float, default=0.24)
     parser.add_argument("--passive-threshold", type=float, default=0.20)
+    parser.add_argument("--short-words", type=int, default=4)
+    parser.add_argument("--strong-score", type=float, default=0.65)
     parser.add_argument("--output", type=Path, help="Write generated retrieval records as JSONL")
     parser.add_argument("--validate", action="store_true")
     args = parser.parse_args()
@@ -116,6 +133,7 @@ def main() -> int:
         records = semantic_local_results(
             corpus, args.model, saved_threshold=args.saved_threshold,
             passive_threshold=args.passive_threshold,
+            short_words=args.short_words, strong_score=args.strong_score,
         )
     else:
         records = read_jsonl(args.results)

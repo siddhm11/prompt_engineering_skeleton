@@ -85,6 +85,18 @@ The former 0.40/0.50 cutoffs favored clean abstention but removed half of releva
 
 Thresholds should be monitored by source. A single global threshold would hide the fact that saved facts and passive patterns have different score distributions and different costs when wrong.
 
+### Short questions (October 2026)
+
+Testers saw "what's Kibana" answered about ATS. The calibration corpus never caught it: each person has three long memories, so nothing unrelated came close. Real passive memory is mostly short questions, and for a short draft the score is dominated by its frame and word pieces: "whats kibana" scores 0.59 against a past "whats jira", and "tell me about logstash" 0.28 against a past "ATS". No threshold separates these: 0.40 for both layers still lets three of the seven through, while main-corpus recall falls to 0.44.
+
+`context_retrieval_short_questions.json` holds these cases. The fix is a gate on passive patterns only (`backend/services/context_gate.py`): a draft of four content words or fewer keeps a past rewrite only if they share a content word, or it scores 0.65 or more. Saved prompts are not gated, because they are often worded nothing like the drafts that need them (requiring a shared word there drops main recall to 0.64). Longer drafts are not gated, which keeps cross-language passive memory (lucia-02) reachable.
+
+| Suite | Before (P / R / abstention) | After |
+|---|---|---|
+| Calibration | 0.84 / 0.92 / 1.00 | 0.87 / 0.92 / 1.00 |
+| Holdout | 0.83 / 1.00 / 1.00 | 0.88 / 1.00 / 1.00 |
+| Short questions | 0.88 / 1.00 / **0.00** | 1.00 / 1.00 / 1.00 |
+
 ### Untrusted context
 
 The production system prompt resisted injection in the current user text but did not explicitly label every retrieved layer as untrusted. It now names conversation history, saved prompts, passive patterns, and feedback as data that cannot override the current request. The context task instruction now applies relevance filtering to every layer, not only selected and related saved prompts.
