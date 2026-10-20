@@ -126,6 +126,12 @@ class Settings:
     # disappear almost entirely at the former 0.50 threshold.
     SAVED_CONTEXT_MIN_SCORE = float(os.getenv("SAVED_CONTEXT_MIN_SCORE", "0.24"))
     PASSIVE_CONTEXT_MIN_SCORE = float(os.getenv("PASSIVE_CONTEXT_MIN_SCORE", "0.20"))
+    # A draft of this many content words or fewer is mostly its frame: a past
+    # rewrite must share a word with it, or score at least the strong score
+    # (see services/context_gate.py; calibrated on
+    # evals/context_retrieval_short_questions.json).
+    PASSIVE_SHORT_QUERY_WORDS = int(os.getenv("PASSIVE_SHORT_QUERY_WORDS", "4"))
+    PASSIVE_SHORT_QUERY_STRONG_SCORE = float(os.getenv("PASSIVE_SHORT_QUERY_STRONG_SCORE", "0.65"))
 
     # Rate Limiting. Enforced per authenticated user by core.ratelimit, not by
     # IP: the Space sits behind a proxy, so every request shares one source

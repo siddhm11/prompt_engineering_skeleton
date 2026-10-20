@@ -11,6 +11,7 @@ from ..core.config import settings
 from ..core.database import QdrantDB, MongoDB, in_memory_prompt_logs, in_memory_saved_prompts
 from ..core import usage
 from ..services.llm_service import get_embedding
+from ..services.context_gate import passive_match_keeps
 from ..core.logger import logger
 from ..core.logger import logger
 
@@ -169,6 +170,12 @@ class MemoryService:
         matched = []
         for hit in results:
             if hit.score < settings.PASSIVE_CONTEXT_MIN_SCORE:
+                continue
+            if not passive_match_keeps(
+                query_text, hit.payload.get("original_prompt", ""), hit.score,
+                short_words=settings.PASSIVE_SHORT_QUERY_WORDS,
+                strong_score=settings.PASSIVE_SHORT_QUERY_STRONG_SCORE,
+            ):
                 continue
             matched.append({
                 "original": hit.payload.get("original_prompt", ""),

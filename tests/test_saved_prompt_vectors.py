@@ -218,8 +218,21 @@ def test_passive_threshold_is_inclusive_and_configurable(qdrant, monkeypatch):
         1: {"user_id": USER, "approved": True, "original_prompt": "at", "refined_prompt": "kept", "_score": 0.20},
         2: {"user_id": USER, "approved": True, "original_prompt": "below", "refined_prompt": "dropped", "_score": 0.199},
     }
-    hits = MemoryService.retrieve_passive_context(USER, "query", limit=10)
+    # A draft long enough that the short-draft word gate does not apply.
+    hits = MemoryService.retrieve_passive_context(USER, "plan the quarterly report review meeting agenda", limit=10)
     assert [hit["original"] for hit in hits] == ["at"]
+
+
+def test_short_draft_drops_a_past_rewrite_sharing_only_its_frame(qdrant):
+    # "what's Kibana" was answered about ATS: the past prompts cleared the
+    # score gate on the question's frame and word pieces alone.
+    qdrant.collections["prompt_memory"] = {
+        1: {"user_id": USER, "approved": True, "original_prompt": "whats jira", "refined_prompt": "Explain Jira.", "_score": 0.59},
+        2: {"user_id": USER, "approved": True, "original_prompt": "ATS", "refined_prompt": "Explain ATS.", "_score": 0.23},
+        3: {"user_id": USER, "approved": True, "original_prompt": "kibana vs grafana", "refined_prompt": "Compare them.", "_score": 0.40},
+    }
+    hits = MemoryService.retrieve_passive_context(USER, "what's Kibana", limit=10)
+    assert [hit["original"] for hit in hits] == ["kibana vs grafana"]
 
 
 def test_unapproved_legacy_passive_points_are_not_retrieved(qdrant):
