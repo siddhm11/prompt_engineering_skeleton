@@ -1897,9 +1897,12 @@ const SHEET_W_MIN = 300, SHEET_H_MIN = 240;   // the smallest a drag on its edge
 const SHEET_SIZE_KEY = "pm_sheet_size";
 let sheetSize = { w: 0, h: 0 };
 // Where the user dragged the sheet, per site, kept on this device; null is
-// "on the chat box". Measured from the chat box (its right edge and top) so it
-// follows the box from page to page and window size to window size, or from
-// the window when the page has no chat box.
+// "in its usual place". Measured from the window's nearer edges ({ edge, x, vedge, y }),
+// not from the chat box: the box moves from the middle of a new chat to the
+// foot of a conversation, and a sheet measured from it reopened 400px from
+// where it was left. Kept by its nearer edges, it stays by them as the window
+// changes size. Earlier builds stored { dx, dy } from the box or { x, y }
+// from the window's top left; both are still read (see sheetFreePoint).
 const sheetPosKey = () => `pm_sheet_pos:${window.location.hostname}`;
 let sheetPos = null;
 let sheetMoveTap = 0;          // when the grip was last pressed without a drag
@@ -2000,11 +2003,7 @@ function startSheetMove(e) {
       if (again) resetSheetPosition();
       return;
     }
-    const b = { left: lib.offsetLeft, top: lib.offsetTop };
-    const f = composerFrame(findComposer());
-    sheetPos = f && f.width >= 240
-      ? { dx: Math.round(b.left - f.right), dy: Math.round(b.top - f.top) }
-      : { x: Math.round(b.left), y: Math.round(b.top) };
+    sheetPos = sheetPosFromWindow(lib.offsetLeft, lib.offsetTop, lib.offsetWidth);
     storageSet({ [sheetPosKey()]: sheetPos });
     renderLibrary();   // the head gains its ↙
   };
@@ -2019,6 +2018,29 @@ function resetSheetPosition() {
   sheetPos = null;
   storageSet({ [sheetPosKey()]: null });
   if (panelOpen) { renderLibrary(); focusLibrarySearch(); }
+}
+
+/** Where a sheet at (left, top) sits, by the window's nearer edges. */
+function sheetPosFromWindow(left, top, width) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const edge = left + width / 2 > vw / 2 ? "right" : "left";
+  const vedge = top > vh / 2 ? "bottom" : "top";
+  return {
+    edge, x: Math.round(edge === "right" ? vw - left - width : left),
+    vedge, y: Math.round(vedge === "bottom" ? vh - top : top),
+  };
+}
+
+/** The top left corner sheetPos puts a sheet of this width at, or null. */
+function sheetFreePoint(width, box) {
+  const p = sheetPos;
+  if (!p) return null;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (p.edge && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+    return { x: p.edge === "right" ? vw - p.x - width : p.x, y: p.vedge === "bottom" ? vh - p.y : p.y };
+  }
+  if (Number.isFinite(p.dx)) return box ? { x: box.right + p.dx, y: box.top + p.dy } : null;
+  return Number.isFinite(p.x) ? { x: p.x, y: p.y } : null;
 }
 
 /**
@@ -2071,11 +2093,8 @@ function positionLibrary() {
   const frame = composerFrame(composer);
   const box = frame && frame.width >= 240 ? frame : null;
 
-  // Moved by hand: where it was put, measured from the chat box when there
-  // is one (see startSheetMove).
-  const free = sheetPos && (box && Number.isFinite(sheetPos.dx)
-    ? { x: box.right + sheetPos.dx, y: box.top + sheetPos.dy }
-    : Number.isFinite(sheetPos.x) ? { x: sheetPos.x, y: sheetPos.y } : null);
+  // Moved by hand: where it was put (see startSheetMove, sheetPos).
+  const free = sheetFreePoint(width, box);
   lib.classList.toggle("pm-lib-free", Boolean(free));
   if (free) {
     placeSheetFree(lib, free.x, free.y, width);
