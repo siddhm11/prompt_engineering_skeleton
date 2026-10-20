@@ -34,7 +34,7 @@ added later.
 
 ## 1. Package
 
-- Build: `python scripts/package_extension.py` → `dist/prompt-memory-4.12.0.zip`.
+- Build: `python scripts/package_extension.py` → `dist/prompt-memory-4.13.0.zip`.
   `scripts/check_release_zip.py` checks it. Never zip the `extension/` folder
   by hand: it would ship the test harnesses.
 - The manifest's `description` is already the new summary on this branch.
