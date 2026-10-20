@@ -206,6 +206,33 @@ def main():
         check(ta["r"] <= v["r"] and ta["l"] >= v["l"], f"and the transcript box no longer runs off its edge, got {ta} in {v}")
         ev("cleanupVoice()")
 
+        # ── no rewrites left: voice says so, before the microphone opens ──
+        page.set_viewport_size({"width": 1440, "height": 900})
+        ev("H.signIn()")
+        load()
+        ev("""window.__mics = 0; navigator.mediaDevices.getUserMedia = async () => { window.__mics++; throw new Error('no mic in the harness'); }; 0""")
+        def toasts():
+            return " ".join(page.locator(".pm-toast").all_inner_texts())
+        ev("usageData = { count: 15, limit: 15, known: true }")
+        ev("void startVoice()")
+        page.wait_for_timeout(300)
+        check("voice is off until tomorrow" in toasts(), f"with no rewrites left voice says why, got {toasts()!r}")
+        check(ev("window.__mics") == 0 and ev("voiceState") == "idle", "and the microphone is never opened")
+        ev("document.querySelectorAll('.pm-toast').forEach(t => t.remove()); usageData = { count: 3, limit: 15, known: true }")
+        ev("void startVoice()")
+        page.wait_for_timeout(300)
+        check(ev("window.__mics") == 1, "with rewrites left it goes on to the microphone")
+        # A stale count: the server refuses, its words are shown, and the count is learned.
+        ev("""(() => { const real = window.fetch; window.fetch = (url, opts) => String(url).endsWith('/voice-transcribe')
+            ? Promise.resolve(new Response(JSON.stringify({ error: 'daily_limit_reached', used: 15, limit: 15,
+                detail: "You've used all 15 free rewrites for today, so voice is off until tomorrow." }), { status: 429 }))
+            : real(url, opts); })()""")
+        ev("document.querySelectorAll('.pm-toast').forEach(t => t.remove()); usageData = { count: 3, limit: 15, known: true }")
+        ev("voiceState = 'transcribing'; transcribeVoiceAudio(new Blob(['x'.repeat(200)]), 'tok', 3)")
+        page.wait_for_timeout(400)
+        check("You've used all 15 free rewrites" in toasts(), f"a refusal from the server is shown in its words, got {toasts()!r}")
+        check(ev("usageData.count") == 15 and ev("voiceState") == "idle", "and the count is learned, so the next press answers at once")
+
         check(not errors, f"page errors: {errors}")
         browser.close()
     httpd.shutdown()
