@@ -749,6 +749,26 @@ def main():
         page.click("#pm-tracking-toggle")
         check(ev("JSON.parse(localStorage.getItem('pm')).pm_tracking") is False and ev("promptTrackingEnabled") is False,
               "and off again")
+
+        # Matching the library on its own: a switch apart from conversation
+        # context, and sent with every rewrite.
+        def stream_body():
+            ev("FAKE_API.calls = []")
+            ev("enhancePromptStream('whats kibana', [], () => {}, () => {}).catch(() => {})")
+            page.wait_for_function("FAKE_API.calls.some(c => c.path === '/enhance/stream')", timeout=3000)
+            return calls("POST", "/enhance/stream")[-1]["body"]
+        check(page.is_checked("#pm-auto-context-toggle") and ev("autoContextEnabled") is True,
+              "Match my library automatically starts on")
+        check(stream_body()["auto_context"] is True, "and a rewrite says so")
+        page.click("#pm-auto-context-toggle")
+        check(ev("JSON.parse(localStorage.getItem('pm')).pm_auto_context") is False and ev("autoContextEnabled") is False,
+              "off is stored and applied")
+        body = stream_body()
+        check(body["auto_context"] is False, "a rewrite then asks the server not to match the library")
+        check(page.is_checked("#pm-context-toggle") and "conversation_context" in body,
+              "and conversation context is a separate switch, left as it was")
+        page.click("#pm-auto-context-toggle")
+        check(stream_body()["auto_context"] is True, "on again, the next rewrite matches again")
         page.keyboard.press("Escape")
         check(ev("document.getElementById('pm-library').dataset.page") == "list", "esc on a page goes back to the list")
         page.click("#pm-lib-more")

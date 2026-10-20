@@ -72,6 +72,9 @@ class EnhanceRequest(BaseModel):
     selected_prompt_ids: Optional[List[str]] = None
     # Auto-matched saved prompts the user dropped from the card ("don't use").
     excluded_prompt_ids: Optional[List[str]] = None
+    # False: the user turned off "Match my library automatically". Neither
+    # saved prompts nor past rewrites are searched; attached ones still count.
+    auto_context: Optional[bool] = True
     source_language: Optional[str] = None  # ISO code from Whisper (e.g., "en", "hi")
     tracking_enabled: Optional[bool] = True
 

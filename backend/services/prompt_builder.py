@@ -313,6 +313,9 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str, fetch_saved_pr
     # rerun; those, and anything they attached themselves, are not searched.
     excluded_ids = [str(pid) for pid in (getattr(request, "excluded_prompt_ids", None) or [])]
     reuse = getattr(request, "reuse_context", None)
+    # "Match my library automatically" off: no search of either layer. What the
+    # user attached, above, still counts, and a retry keeps what it was given.
+    auto = getattr(request, "auto_context", True) is not False
     if reuse is not None:
         # A retry of an earlier rewrite: the context the user kept on the card,
         # looked up by id (ownership checked by fetch_saved_prompt_fn), and no
@@ -326,6 +329,8 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str, fetch_saved_pr
             if doc:
                 similar_saved.append({"mongo_id": m.id, "title": doc.get("title") or "",
                                       "content": doc["content"], "score": float(m.score or 0.0)})
+    elif not auto:
+        similar_saved = []
     else:
         similar_saved = [
             item for item in MemoryService.search_saved_prompts(
@@ -350,6 +355,8 @@ def _build_enhance_context(request: EnhanceRequest, user_id: str, fetch_saved_pr
              "score": float(p.score or 0.0)}
             for p in reuse.passive[:3]
         ]
+    elif not auto:
+        passive_matches = []
     else:
         passive_matches = MemoryService.retrieve_passive_context(
             user_id=user_id,
