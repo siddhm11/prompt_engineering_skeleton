@@ -1330,6 +1330,9 @@
        grow and slide up over the composer the user is still typing in. */
     max-height: min(40vh, var(--pm-card-text-max, 40vh));
     overflow-y: auto;
+    /* A two-finger swipe that reaches the end stops there, rather than going
+       on to scroll the conversation behind the card. */
+    overscroll-behavior: contain;
     white-space: pre-wrap;
     word-break: break-word;
 }
