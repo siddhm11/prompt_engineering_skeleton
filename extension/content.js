@@ -86,6 +86,11 @@ const MOD_SHIFT = IS_MAC ? "⌘⇧" : "Ctrl+Shift+";
 // five chat sites. (It was Ctrl/⌘+Shift+Space for a while; testers kept
 // reaching for V.) Chrome lets the user change it at chrome://extensions/shortcuts.
 const VOICE_KEY = IS_MAC ? "⌃⇧V" : "Alt+Shift+V";
+// Improve a second way, off a Mac: Claude on Windows keeps Ctrl+Shift chords
+// for itself and Ctrl+Shift+E never reached us there (testers, 20 October).
+// Alt+Shift+E is free on the five sites. Not on a Mac, where Option+Shift+E
+// types a character and ⌘⇧E is not taken.
+const IMPROVE_ALT_KEY = IS_MAC ? "" : "Alt+Shift+E";
 // The same goes for the keys themselves. ↵ and ⇥ are what a Mac keyboard and
 // its menus print; on Windows the keycap says Enter and Tab, and "Ctrl+↵" was
 // half of each convention.
@@ -110,7 +115,8 @@ const SHORTCUTS = () => [
   {
     where: "Anywhere on the page",
     rows: [
-      { keys: [`${MOD_SHIFT}E`], what: "Rewrite what is in the chat box" },
+      { keys: [`${MOD_SHIFT}E`], what: "Rewrite what is in the chat box",
+        ...(IMPROVE_ALT_KEY ? { note: `or ${IMPROVE_ALT_KEY}, where a site keeps ${MOD_SHIFT}E` } : {}) },
       { keys: [VOICE_KEY], what: "Start voice input" },
       { keys: [`${MOD_SHIFT}L`], what: "Open the library" },
       { keys: ["?"], what: "Show this list", note: "when you are not typing" },
@@ -1495,6 +1501,18 @@ function setupKeyboardShortcut() {
       togglePanel();
     }
   });
+
+  // Alt+Shift+E (see IMPROVE_ALT_KEY), in the capture phase: it exists for a
+  // site that takes its own Ctrl+Shift chords, and a site that stops a key on
+  // its way up would stop this one too.
+  window.addEventListener("keydown", (e) => {
+    if (orphaned || !extensionAlive()) return;
+    const improveAltChord = !IS_MAC && e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey;
+    if (!improveAltChord || e.code !== "KeyE" || e.repeat) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleEnhance({ reveal: true });
+  }, true);
 
   // "?" is the convention for "what can I press" — GitHub, Gmail, Linear all
   // use it — and it needs no chord to remember. The whole trick is that on a
