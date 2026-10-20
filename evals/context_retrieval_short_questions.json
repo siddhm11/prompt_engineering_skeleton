@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "purpose": "Short questions: a 'what is X' must not pull a past 'what is Y', or a past prompt that only shares word pieces. From the Oct 2026 tester call: 'what's Kibana' was answered about ATS.",
+  "memories": [
+    {
+      "id": "sid-jira",
+      "user_id": "sid",
+      "source": "passive",
+      "content": "whats jira"
+    },
+    {
+      "id": "sid-docker",
+      "user_id": "sid",
+      "source": "passive",
+      "content": "what's docker"
+    },
+    {
+      "id": "sid-ats-score",
+      "user_id": "sid",
+      "source": "passive",
+      "content": "what's an ATS score and how do I improve mine"
+    },
+    {
+      "id": "sid-ats",
+      "user_id": "sid",
+      "source": "passive",
+      "content": "ATS"
+    },
+    {
+      "id": "sid-kafka",
+      "user_id": "sid",
+      "source": "passive",
+      "content": "explain kafka consumer groups with an example"
+    },
+    {
+      "id": "sid-resume",
+      "user_id": "sid",
+      "source": "saved",
+      "content": "Make my resume ATS friendly for a backend internship: one page, quantified bullets, Python and FastAPI first."
+    },
+    {
+      "id": "sid-bio",
+      "user_id": "sid",
+      "source": "saved",
+      "content": "I'm a final-year CSE student applying for backend internships; keep answers short and practical."
+    }
+  ],
+  "cases": [
+    {
+      "id": "sid-01",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "what's Kibana",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-02",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "whats kibana",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-03",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "what is kibana used for",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-04",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "whats grafana",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-05",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "what's react",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-06",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "tell me about logstash",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-07",
+      "user_id": "sid",
+      "slice": "short_unrelated",
+      "query": "what is an LLM",
+      "relevance": {},
+      "k": 3
+    },
+    {
+      "id": "sid-08",
+      "user_id": "sid",
+      "slice": "short_related",
+      "query": "what's an ATS",
+      "relevance": {
+        "sid-ats-score": 3,
+        "sid-ats": 2,
+        "sid-resume": 2
+      },
+      "k": 3
+    },
+    {
+      "id": "sid-09",
+      "user_id": "sid",
+      "slice": "short_related",
+      "query": "how do I improve my ATS score",
+      "relevance": {
+        "sid-ats-score": 3,
+        "sid-ats": 1,
+        "sid-resume": 2
+      },
+      "k": 3
+    },
+    {
+      "id": "sid-10",
+      "user_id": "sid",
+      "slice": "single_relevant",
+      "query": "rewrite my resume summary so it passes ATS",
+      "relevance": {
+        "sid-resume": 3,
+        "sid-ats-score": 1,
+        "sid-ats": 1
+      },
+      "k": 3
+    },
+    {
+      "id": "sid-11",
+      "user_id": "sid",
+      "slice": "single_relevant",
+      "query": "how do kafka consumer groups rebalance",
+      "relevance": {
+        "sid-kafka": 3
+      },
+      "k": 3
+    }
+  ]
+}
