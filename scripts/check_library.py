@@ -919,33 +919,69 @@ def main():
         ev("closeCard(); clearAttachments()")
         page.set_viewport_size({"width": 1440, "height": 900})
 
-        # ── the sheet opens on the chat box, wherever the pill is ──
-        lib_on_box = """(() => { const l = document.getElementById('pm-library').getBoundingClientRect();
-            const f = composerFrame(findComposer()); return { gapAbove: Math.round(f.top - l.bottom), gapBelow: Math.round(l.top - f.bottom),
-            rightDiff: Math.round(Math.abs(l.right - f.right)), side: document.getElementById('pm-library').dataset.side }; })()"""
+        # ── the sheet opens on the ⊕, clear of the chat box, wherever the ⊕ is ──
+        on_plus = """(() => { const l = document.getElementById('pm-library').getBoundingClientRect();
+            const p = document.getElementById('pm-trigger').getBoundingClientRect();
+            const f = composerFrame(findComposer());
+            const right = p.left + p.width / 2 > innerWidth / 2;
+            const meets = l.left < f.right && l.right > f.left && l.top < f.bottom && l.bottom > f.top - RAIL_SLOT;
+            return { edge: Math.round(right ? Math.abs(l.right - Math.min(p.right, innerWidth - 12)) : Math.abs(l.left - Math.max(p.left, 12))),
+                     overBox: meets, side: document.getElementById('pm-library').dataset.side,
+                     gapToPlus: Math.round(document.getElementById('pm-library').dataset.side === 'above' ? p.top - l.bottom : l.top - p.bottom),
+                     l: Math.round(l.left), t: Math.round(l.top), r: Math.round(l.right), b: Math.round(l.bottom) }; })()"""
         open_lib()
-        on = ev(lib_on_box)
-        check(on["side"] == "above" and 0 <= on["gapAbove"] <= 60 and on["rightDiff"] <= 1,
-              f"the sheet stands just above the chat box, its right edge on the box's, got {on}")
+        page.wait_for_timeout(250)   # the open animation scales it
+        on = ev(on_plus)
+        check(on["edge"] <= 1 and not on["overBox"] and on["side"] == "above",
+              f"the sheet opens on the ⊕, its outer edge on the ⊕'s, clear of the chat box, got {on}")
+        check(0 <= on["gapToPlus"] <= 140, f"and close above it, got {on}")
         page.keyboard.press("Escape")
         for dock, bottom in (("left", 120), ("right", 600), ("left", 700)):
             ev(f"pillDock = '{dock}'; pillBottom = {bottom}; placePill()")
             open_lib()
-            on = ev(lib_on_box)
-            check(on["side"] == "above" and 0 <= on["gapAbove"] <= 60 and on["rightDiff"] <= 1,
-                  f"with the pill moved ({dock}, {bottom}px up) the sheet still opens on the box, got {on}")
+            page.wait_for_timeout(250)
+            on = ev(on_plus)
+            check(on["edge"] <= 1 and not on["overBox"],
+                  f"with the ⊕ moved ({dock}, {bottom}px up) the sheet still opens on it, clear of the box, got {on}")
             page.keyboard.press("Escape")
         ev("pillDock = 'right'; pillBottom = 24; placePill()")
         ev("document.body.classList.add('center')")
         page.wait_for_timeout(150)
         open_lib()
-        on = ev(lib_on_box)
-        near = (on["side"] == "above" and 0 <= on["gapAbove"] <= 60) or (on["side"] == "below" and 0 <= on["gapBelow"] <= 20)
-        check(near and on["rightDiff"] <= 1, f"a new chat's centred box still has the sheet beside it, not in a corner, got {on}")
+        page.wait_for_timeout(250)   # the open animation scales it
+        on = ev(on_plus)
+        box = rect("form")
+        check(on["edge"] <= 1 and not on["overBox"] and on["t"] >= box["b"],
+              f"a new chat's centred box: the sheet sits between the box and the ⊕, got {on} under {box}")
         page.keyboard.press("Escape")
         ev("document.body.classList.remove('center')")
+        # Drift from ⊕ to the chip as a hand does (see reach_the_chip_from_anywhere),
+        # on a fresh page: a draft left in the box above hides the chip.
+        load()
+        pb, cb = page.locator("#pm-trigger").bounding_box(), None
+        page.mouse.move(pb["x"] + pb["width"] / 2, pb["y"] + pb["height"] / 2)
+        page.wait_for_timeout(300)
+        if page.is_visible("#pm-library-btn"):
+            cb = page.locator("#pm-library-btn").bounding_box()
+            for f in (0.25, 0.5, 0.75, 1):
+                page.mouse.move(pb["x"] + pb["width"] / 2 + (cb["x"] + cb["width"] / 2 - pb["x"] - pb["width"] / 2) * f,
+                                pb["y"] + pb["height"] / 2 + (cb["y"] + cb["height"] / 2 - pb["y"] - pb["height"] / 2) * f)
+                page.wait_for_timeout(30)
+            page.mouse.down()
+            page.mouse.up()
+            page.wait_for_timeout(300)
+        check(cb is not None and ev("panelOpen"), "the Library chip beside ⊕ opens the library")
+        if cb:
+            first = ev(on_plus)
+            page.keyboard.press("Escape")
+            open_lib()
+            page.wait_for_timeout(250)
+            again = ev(on_plus)
+            check((first["l"], first["t"]) == (again["l"], again["t"]),
+                  f"the Library chip and the shortcut open it in the one spot, {first} vs {again}")
+            page.keyboard.press("Escape")
 
-        # ── drag it anywhere; it stays there, follows the box, and comes back ──
+        # ── drag it anywhere; it opens there again, whatever the chat box does ──
         def drag_grip(dx, dy):
             g = page.locator("#pm-library .pm-lib-move").bounding_box()
             x, y = g["x"] + g["width"] / 2, g["y"] + g["height"] / 2
@@ -962,7 +998,7 @@ def main():
         after = rect("#pm-library")
         check(abs(after["l"] - (before["l"] - 420)) <= 2 and abs(after["t"] - (before["t"] - 160)) <= 2,
               f"the grip drags the sheet where the pointer goes, {before} -> {after}")
-        check(page.locator("#pm-lib-home").count() == 1, "once moved, the head offers ↙ to put it back")
+        check(page.locator("#pm-lib-home").count() == 1, "once moved, the head offers a way back to the ⊕")
         check(ev("""(() => { const q = document.getElementById('pm-lib-q'), c = document.createElement('canvas').getContext('2d');
                      c.font = getComputedStyle(q).font; return c.measureText(q.placeholder).width <= q.clientWidth; })()"""),
               "and the search box's placeholder still fits beside it")
@@ -971,17 +1007,28 @@ def main():
         page.wait_for_timeout(250)
         again = rect("#pm-library")
         check(abs(again["l"] - after["l"]) <= 2 and abs(again["t"] - after["t"]) <= 2, f"it opens where it was put, {after} vs {again}")
+        page.keyboard.press("Escape")
+        ev("document.body.classList.add('center')")   # a new chat: the box moves to the middle
+        page.wait_for_timeout(150)
+        open_lib()
+        page.wait_for_timeout(250)
+        again = rect("#pm-library")
+        check(abs(again["l"] - after["l"]) <= 2 and abs(again["t"] - after["t"]) <= 2,
+              f"and stays there when the chat box moves (a new chat), {after} vs {again}")
+        page.keyboard.press("Escape")
+        ev("document.body.classList.remove('center')")
         load()
         open_lib()
         page.wait_for_timeout(250)
         again = rect("#pm-library")
         check(abs(again["l"] - after["l"]) <= 2 and abs(again["t"] - after["t"]) <= 2, f"and after a reload, {after} vs {again}")
-        box0 = rect("form")
-        page.set_viewport_size({"width": 1200, "height": 900})
+        page.set_viewport_size({"width": 1200, "height": 800})
         page.wait_for_timeout(200)
-        box1, moved = rect("form"), rect("#pm-library")
-        check(abs((moved["l"] - box1["r"]) - (after["l"] - box0["r"])) <= 2 and abs((moved["t"] - box1["t"]) - (after["t"] - box0["t"])) <= 2,
-              f"it keeps its place beside the chat box when the window changes, {moved} vs box {box1}")
+        moved = rect("#pm-library")
+        by_right = (after["l"] + after["r"]) / 2 > 1440 / 2
+        kept = abs((1200 - moved["r"]) - (1440 - after["r"])) <= 2 if by_right else abs(moved["l"] - after["l"]) <= 2
+        check(kept and abs(moved["t"] - after["t"]) <= 2,
+              f"in a smaller window it keeps its distance from the nearer edges ({'right' if by_right else 'left'}, top), {after} vs {moved}")
         page.set_viewport_size({"width": 1440, "height": 900})
         page.wait_for_timeout(150)
         drag_grip(-3000, -3000)
@@ -990,19 +1037,36 @@ def main():
         drag_grip(5000, 5000)
         off = rect("#pm-library")
         check(off["r"] <= 1440 - 11 and off["b"] <= 900 - 11, f"on every side, got {off}")
+        page.set_viewport_size({"width": 1200, "height": 800})
+        page.wait_for_timeout(200)
+        near = rect("#pm-library")
+        check(abs((1200 - near["r"]) - (1440 - off["r"])) <= 2,
+              f"one put by the right edge stays by the right edge as the window narrows, {off} -> {near}")
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.wait_for_timeout(150)
         page.click("#pm-lib-home")
         page.wait_for_timeout(150)
-        on = ev(lib_on_box)
-        check(on["side"] == "above" and 0 <= on["gapAbove"] <= 60 and on["rightDiff"] <= 1 and page.locator("#pm-lib-home").count() == 0,
-              f"↙ puts it back on the chat box, and goes, got {on}")
+        on = ev(on_plus)
+        check(on["edge"] <= 1 and not on["overBox"] and page.locator("#pm-lib-home").count() == 0,
+              f"the way back puts it on the ⊕, and goes, got {on}")
         drag_grip(-300, -100)
         g = page.locator("#pm-library .pm-lib-move").bounding_box()
         page.mouse.click(g["x"] + 8, g["y"] + 14)
         page.mouse.click(g["x"] + 8, g["y"] + 14)
         page.wait_for_timeout(150)
-        on = ev(lib_on_box)
-        check(on["side"] == "above" and on["rightDiff"] <= 1, f"so does a double-click on the grip, got {on}")
+        on = ev(on_plus)
+        check(on["edge"] <= 1, f"so does a double-click on the grip, got {on}")
         check(ev("sheetPos") is None, "and the place it was put is forgotten")
+
+        # A place kept by an earlier build, measured from the chat box, still opens there.
+        page.keyboard.press("Escape")
+        ev("sheetPos = { dx: -500, dy: -300 }")
+        open_lib()
+        page.wait_for_timeout(250)
+        box, old = rect("form"), rect("#pm-library")
+        check(abs(old["l"] - (box["r"] - 500)) <= 2 and abs(old["t"] - (box["t"] - 300)) <= 2,
+              f"a place kept by an earlier build still opens where it was, {old} by box {box}")
+        page.click("#pm-lib-home")
         page.keyboard.press("Escape")
 
         check(not errors, f"page errors: {errors}")
