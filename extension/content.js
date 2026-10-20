@@ -1906,9 +1906,12 @@ const SHEET_W_MIN = 300, SHEET_H_MIN = 240;   // the smallest a drag on its edge
 const SHEET_SIZE_KEY = "pm_sheet_size";
 let sheetSize = { w: 0, h: 0 };
 // Where the user dragged the sheet, per site, kept on this device; null is
-// "on the chat box". Measured from the chat box (its right edge and top) so it
-// follows the box from page to page and window size to window size, or from
-// the window when the page has no chat box.
+// "on the ⊕". Measured from the window's nearer edges ({ edge, x, vedge, y }),
+// not from the chat box: the box moves from the middle of a new chat to the
+// foot of a conversation, and a sheet measured from it reopened 400px from
+// where it was left. Kept by its nearer edges, it stays by them as the window
+// changes size. Earlier builds stored { dx, dy } from the box or { x, y }
+// from the window's top left; both are still read (see sheetFreePoint).
 const sheetPosKey = () => `pm_sheet_pos:${window.location.hostname}`;
 let sheetPos = null;
 let sheetMoveTap = 0;          // when the grip was last pressed without a drag
@@ -1976,7 +1979,7 @@ function startSheetResize(e) {
 /**
  * Drag the grip in the sheet's head to put it anywhere. Kept per site and used
  * every time it opens (see sheetPos). Two presses on the grip without a drag,
- * or the ↙ in the head, put it back on the chat box.
+ * or the ↙ in the head, put it back on the ⊕.
  */
 function startSheetMove(e) {
   const grip = e.target.closest?.(".pm-lib-move");
@@ -2009,11 +2012,7 @@ function startSheetMove(e) {
       if (again) resetSheetPosition();
       return;
     }
-    const b = { left: lib.offsetLeft, top: lib.offsetTop };
-    const f = composerFrame(findComposer());
-    sheetPos = f && f.width >= 240
-      ? { dx: Math.round(b.left - f.right), dy: Math.round(b.top - f.top) }
-      : { x: Math.round(b.left), y: Math.round(b.top) };
+    sheetPos = sheetPosFromWindow(lib.offsetLeft, lib.offsetTop, lib.offsetWidth);
     storageSet({ [sheetPosKey()]: sheetPos });
     renderLibrary();   // the head gains its ↙
   };
@@ -2023,11 +2022,34 @@ function startSheetMove(e) {
   lib.addEventListener("lostpointercapture", end);
 }
 
-/** Back on the chat box, where it opens by default. */
+/** Back on the ⊕, where it opens by default. */
 function resetSheetPosition() {
   sheetPos = null;
   storageSet({ [sheetPosKey()]: null });
   if (panelOpen) { renderLibrary(); focusLibrarySearch(); }
+}
+
+/** Where a sheet at (left, top) sits, by the window's nearer edges. */
+function sheetPosFromWindow(left, top, width) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const edge = left + width / 2 > vw / 2 ? "right" : "left";
+  const vedge = top > vh / 2 ? "bottom" : "top";
+  return {
+    edge, x: Math.round(edge === "right" ? vw - left - width : left),
+    vedge, y: Math.round(vedge === "bottom" ? vh - top : top),
+  };
+}
+
+/** The top left corner sheetPos puts a sheet of this width at, or null. */
+function sheetFreePoint(width, box) {
+  const p = sheetPos;
+  if (!p) return null;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (p.edge && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+    return { x: p.edge === "right" ? vw - p.x - width : p.x, y: p.vedge === "bottom" ? vh - p.y : p.y };
+  }
+  if (Number.isFinite(p.dx)) return box ? { x: box.right + p.dx, y: box.top + p.dy } : null;
+  return Number.isFinite(p.x) ? { x: p.x, y: p.y } : null;
 }
 
 /**
@@ -2080,11 +2102,8 @@ function positionLibrary() {
   const frame = composerFrame(composer);
   const box = frame && frame.width >= 240 ? frame : null;
 
-  // Moved by hand: where it was put, measured from the chat box when there
-  // is one (see startSheetMove).
-  const free = sheetPos && (box && Number.isFinite(sheetPos.dx)
-    ? { x: box.right + sheetPos.dx, y: box.top + sheetPos.dy }
-    : Number.isFinite(sheetPos.x) ? { x: sheetPos.x, y: sheetPos.y } : null);
+  // Moved by hand: where it was put (see startSheetMove, sheetPos).
+  const free = sheetFreePoint(width, box);
   lib.classList.toggle("pm-lib-free", Boolean(free));
   if (free) {
     placeSheetFree(lib, free.x, free.y, width);
@@ -2092,34 +2111,40 @@ function positionLibrary() {
     return;
   }
 
-  let left, ceiling, floor;
-  if (box) {
-    left = Math.max(m, Math.min(box.right - width, vw - width - m));
-    // Above the box it stands on the row the context chips land on, whether
-    // or not any have yet. Standing on the chips themselves, the chip that
-    // first reached under it, and each that wrapped them onto another row,
-    // pushed the sheet up: picking a prompt moved the list being picked
-    // from. While the sheet is open the chips keep to that one row (see
-    // fitRailToOneRow).
-    ceiling = box.top - RAIL_SLOT;
-    floor = box.bottom;
-    // A tall chat box (a long draft) can leave too little room above it. The
-    // sheet may then come down over the box's text, but never over its row
-    // of buttons, where Send is.
-    if (ceiling - gap - m < LIB_ROOM_WANTED) {
-      const controls = composerControlsTop(composer);
-      if (controls !== null) ceiling = Math.max(ceiling, Math.min(controls, ceiling + LIB_ROOM_WANTED));
+  // On the ⊕, its outer edge on the ⊕'s: the sheet opens from the button it
+  // is found by (testers, 20 October). It once opened on the chat box (PR
+  // #21), because hung off the ⊕ it covered a new chat's box; now the box is
+  // kept clear instead. Where the two would meet, the sheet stands on the
+  // box's chip row, or, for a box in the middle of the page with room under
+  // it, sits between the box and the ⊕.
+  const p = pill.getBoundingClientRect();
+  const onRight = p.left + p.width / 2 > vw / 2;
+  const left = onRight ? Math.max(m, Math.min(p.right - width, vw - width - m)) : Math.max(m, Math.min(p.left, vw - width - m));
+  let ceiling = p.top, floor = p.bottom, roof = m, basement = vh - m;
+  const meetsBox = box && left < box.right && left + width > box.left;
+  if (meetsBox && box.top - RAIL_SLOT >= p.bottom) {
+    // A ⊕ dragged up above the box: opening under it, down to the chips' row.
+    basement = box.top - RAIL_SLOT;
+  } else if (meetsBox) {
+    if (box.bottom + gap < p.top && p.top - gap - (box.bottom + gap) >= LIB_ROOM_USEFUL) {
+      roof = box.bottom + gap;
+    } else {
+      ceiling = box.top - RAIL_SLOT;
+      floor = Math.max(floor, box.bottom);
+      // A tall chat box (a long draft) can leave too little room above it.
+      // The sheet may then come down over the box's text, but never over
+      // its row of buttons, where Send is.
+      if (ceiling - gap - m < LIB_ROOM_WANTED) {
+        const controls = composerControlsTop(composer);
+        if (controls !== null) ceiling = Math.max(ceiling, Math.min(controls, ceiling + LIB_ROOM_WANTED));
+      }
+      // A wide ⊕ steps up onto the box's corner: the sheet stands on it.
+      ceiling = Math.min(ceiling, p.top);
     }
-  } else {
-    const p = pill.getBoundingClientRect();
-    const onRight = p.left + p.width / 2 > vw / 2;
-    left = onRight ? Math.max(m, Math.min(p.right - width, vw - width - m)) : Math.max(m, Math.min(p.left, vw - width - m));
-    ceiling = p.top;
-    floor = p.bottom;
   }
   // Above unless that leaves it too short to read a list in (a chat box
   // centred in the page leaves about 280px) and there is more room below.
-  const above = ceiling - gap - m, below = vh - floor - gap - m;
+  const above = ceiling - gap - roof, below = basement - floor - gap;
   const up = above >= LIB_ROOM_USEFUL || above >= below;
   lib.dataset.dock = left + width / 2 > vw / 2 ? "right" : "left";
   lib.style.left = lib.dataset.dock === "left" ? left + "px" : "auto";
@@ -2226,9 +2251,9 @@ function libHeadHtml() {
   // where the Library chip was, so the chip cannot be its toggle; without this
   // the way out was esc or a click somewhere else, and neither is on screen.
   // The grip it is dragged by, first in every head; ↙ once it has been moved.
-  const grip = `<span class="pm-lib-move" title="Drag to move. Double-click to put it back on the chat box." aria-hidden="true">${LIB_ICON.grip}</span>`;
+  const grip = `<span class="pm-lib-move" title="Drag to move. Double-click to put it back on ⊕." aria-hidden="true">${LIB_ICON.grip}</span>`;
   const home = sheetPos
-    ? `<button type="button" class="pm-lib-icon" id="pm-lib-home" data-act="home" aria-label="Put the library back on the chat box" data-pm-tip="Back on the chat box">\u2199</button>`
+    ? `<button type="button" class="pm-lib-icon" id="pm-lib-home" data-act="home" aria-label="Put the library back on ⊕" data-pm-tip="Back on ⊕">${pillDock === "left" ? "\u2199" : "\u2198"}</button>`
     : "";
   const more = home + `<button type="button" class="pm-lib-icon" id="pm-lib-more" data-act="menu" aria-label="Library menu" aria-haspopup="menu" aria-expanded="${libMenu}">${LIB_ICON.more}</button>` +
     `<button type="button" class="pm-lib-icon" id="pm-lib-close" data-act="close" aria-label="Close the library" data-pm-tip="Close" data-pm-key="Esc">${LIB_ICON.close}</button>`;
