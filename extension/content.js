@@ -6573,6 +6573,8 @@ async function getVoiceAuthToken() {
   return auth.token;
 }
 
+const VOICE_LIMIT_MESSAGE = "No rewrites left today, so voice is off until tomorrow. Add your own free key in the extension for 1,000 a day.";
+
 function toggleVoice() {
   if (orphaned || !extensionAlive()) { onOrphaned(); return; }
   if (voiceState === "recording") return stopVoice();
@@ -6585,6 +6587,13 @@ async function startVoice() {
   if (voiceState !== "idle") return;
   const token = await getVoiceAuthToken();
   if (!token) return;
+  // Voice stops with the day's rewrites (testers, 20 October), and saying so
+  // before the microphone opens spares a minute of talking for a refusal.
+  // The server refuses as well; this is only the early answer.
+  if (usageData.known && usageData.count >= usageData.limit) {
+    showToast(VOICE_LIMIT_MESSAGE, "error");
+    return;
+  }
   // A voice result may replace the composer only if it has not changed since
   // recording began. An empty composer is a real, valid baseline—not a signal
   // to skip the stale-write guard.
@@ -6734,6 +6743,12 @@ async function transcribeVoiceAudio(audioBlob, token, durationSeconds) {
       signal: voiceAbortController.signal,
     });
     const data = await response.json().catch(() => ({}));
+    if (data.error === "daily_limit_reached") {
+      // The count was stale (another tab, another device): learn it, so the
+      // next press answers before the microphone opens.
+      if (Number.isFinite(data.used) && Number.isFinite(data.limit)) usageData = { count: data.used, limit: data.limit, known: true };
+      throw new Error(data.detail || VOICE_LIMIT_MESSAGE);
+    }
     if (!response.ok || data.error) {
       throw new Error(data.detail || "Voice transcription failed. Please try again.");
     }
