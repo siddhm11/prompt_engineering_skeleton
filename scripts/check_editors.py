@@ -149,6 +149,11 @@ def run(browser, base, kind):
     check(not ev("cardStale"), f"{kind}: undoing the typing makes it fresh again, got {text()!r}")
 
     # ── // folds the card into the pill ──
+    # The click into the chat box above put the card away, as it does the
+    # library; open it again, as ⌘⇧P would, for // to fold.
+    check(not ev("cardExpanded"), f"{kind}: a click into the chat box put the card away")
+    ev("expandCard()")
+    page.wait_for_timeout(200)
     check(ev("cardExpanded"), f"{kind}: the card is open")
     type_(" //rev")
     check(menu_rows() == 1, f"{kind}: // opens over a draft")
