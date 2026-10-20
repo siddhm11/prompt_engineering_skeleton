@@ -1330,6 +1330,9 @@
        grow and slide up over the composer the user is still typing in. */
     max-height: min(40vh, var(--pm-card-text-max, 40vh));
     overflow-y: auto;
+    /* A two-finger swipe that reaches the end stops there, rather than going
+       on to scroll the conversation behind the card. */
+    overscroll-behavior: contain;
     white-space: pre-wrap;
     word-break: break-word;
 }
@@ -2964,22 +2967,26 @@
 .pm-card-used-toggle:focus-visible { outline: 2px solid var(--pm-accent); outline-offset: 2px; }
 .pm-card-used-caret { transition: transform .15s ease; opacity: .8; }
 .pm-card-used-toggle[aria-expanded="true"] .pm-card-used-caret { transform: rotate(180deg); }
-.pm-card-used-list { list-style: none; margin: 0 17px 12px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+/* One quiet line per item, and no more than about four before it scrolls:
+   three two-line rows with a heading left the rewrite two lines to be read in. */
+.pm-card-used-list {
+    list-style: none; margin: 0 17px 10px; padding: 0; display: flex; flex-direction: column; gap: 0;
+    max-height: 124px; overflow-y: auto; overscroll-behavior: contain;
+}
 .pm-card-used-list[hidden] { display: none; }
-.pm-card-used-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--pm-bg-hover); }
+.pm-card-used-item { flex: none; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 4px 0 6px; border-radius: 6px; }
+.pm-card-used-item:hover { background: var(--pm-bg-hover); }
 .pm-card-used-icon { flex: none; width: 16px; text-align: center; color: var(--pm-accent); font-size: 13px; line-height: 1; }
 .pm-card-used-icon svg { width: 14px; height: 14px; vertical-align: middle; }
-.pm-card-used-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.pm-card-used-name { font-size: 12.5px; color: var(--pm-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pm-card-used-why { font-size: 11px; color: var(--pm-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-card-used-name { flex: 1; min-width: 0; font-size: 12.5px; color: var(--pm-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-card-used-item:hover .pm-card-used-name { color: var(--pm-text); }
 .pm-card-used-drop {
-    flex: none; font: 11.5px var(--pm-font); color: var(--pm-text); cursor: pointer;
-    background: transparent; border: 1px solid var(--pm-border); border-radius: 100px; padding: 3px 10px; min-height: 26px;
+    flex: none; font: 11.5px var(--pm-font); color: var(--pm-text-muted); cursor: pointer;
+    background: transparent; border: 0; border-radius: 6px; padding: 3px 7px;
 }
-.pm-card-used-drop:hover { border-color: var(--pm-danger, #e5484d); color: var(--pm-danger, #e5484d); }
+.pm-card-used-drop:hover { color: var(--pm-danger, #e5484d); background: var(--pm-bg-soft); }
 .pm-card-used-drop:focus-visible { outline: 2px solid var(--pm-accent); outline-offset: 2px; }
 .pm-card-used-left { font-size: 11px; color: var(--pm-text-muted); padding: 4px 8px 0; }
-.pm-card-used-head { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--pm-text-muted); padding: 2px 8px 4px; }
 
 /* One action inside a toast (Undo after updating a saved prompt). */
 .pm-toast-action {
@@ -3110,10 +3117,13 @@
 @media (prefers-reduced-motion: reduce) { .pm-select-save { animation: none; } }
 
 /* ── Retrieved context: untick, then Retry ── */
-.pm-card-used-off .pm-card-used-name,
-.pm-card-used-off .pm-card-used-why { text-decoration: line-through; opacity: .55; }
+.pm-card-used-off .pm-card-used-name { text-decoration: line-through; opacity: .55; }
 .pm-card-used-drop.pm-card-used-undrop { color: var(--pm-accent); }
 .pm-card-used-retry {
+    /* Stays in view at the foot of a list long enough to scroll. */
+    position: sticky;
+    bottom: 0;
+    background: var(--pm-bg);
     display: flex;
     align-items: center;
     gap: 8px;

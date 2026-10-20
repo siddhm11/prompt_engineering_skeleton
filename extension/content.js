@@ -4962,6 +4962,10 @@ function cardHead(title, kind = "", extra = "") {
 // ── Entry point 1: the flow is starting ──
 function showStreamingDiffModal(originalText, style = currentMode) {
   cardStreamingStyle = style;
+  // A new rewrite starts with its context folded under the chip. It stayed
+  // open from the last one, so every rewrite after a first look came with
+  // the whole list over the text.
+  cardUsedOpen = false;
   cardOriginal = originalText;
   cardBasedOn = norm(originalText);
   cardHasBaseline = true;
@@ -5280,9 +5284,10 @@ function reuseContextFrom(result, excluded = [], droppedPatterns = new Set()) {
  * the ones the server matched on its own. A matched one can be dropped, which
  * rewrites the same text again without it (a new version; the old one stays).
  *
- * Two parts. `chip` goes in the title bar: the first name and how many more,
- * with all of them in its tooltip. `list` goes under the text, folded until the
- * chip is pressed. It was a line between the text and the actions, where it
+ * Two parts. `chip` goes in the title bar: "Context · 3", with every name in
+ * its tooltip. It named the first prompt and how many more, which filled the
+ * title bar (testers, 20 October). `list` goes under the text, folded until the
+ * chip is pressed, and folded again for each new rewrite. It was a line between the text and the actions, where it
  * sat on the text's fade and crowded the buttons. Neither is shown on the
  * original, or on a stale draft, whose title bar has a notice to give.
  */
@@ -5307,28 +5312,28 @@ function cardUsedParts(result) {
   }
   const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
   const clip = (t, k) => (t.length > k ? t.slice(0, k - 1) + "\u2026" : t);
-  const name = (p) => flat(p.title) || clip(flat(p.content), 40) || "Saved prompt";
-  const summary = items.length
-    ? escHtml(clip(name(items[0]), 24)) + (items.length > 1 ? ` +${items.length - 1}` : "")
-    : "None used";
-  const all = items.length ? "Context: " + items.map((p) => escHtml(clip(name(p), 60))).join(", ") : "No saved prompts used as context";
+  const name = (p) => flat(p.title) || clip(flat(p.content), 120) || "Saved prompt";
+  const summary = items.length ? `Context \u00b7 ${items.length}` : "None used";
+  const all = escAttr(items.length ? "Context: " + items.map((p) => clip(name(p), 60)).join(", ") : "No saved prompts used as context");
   const rows = items.map((p) => {
     // Said the way a person would: "close match" and "loose match" named the
     // matcher's score, and testers did not know what to make of it.
-    const why = p.kind === "attached" ? "you added it"
-      : p.kind === "pattern" ? `picked for you, from a past prompt: \u201c${escHtml(clip(flat(p.from), 40))}\u201d`
-      : "picked for you";
-    const preview = p.title && p.content ? " \u00b7 " + escHtml(clip(flat(p.content), 80)) : "";
+    const why = p.kind === "attached" ? "You added it"
+      : p.kind === "pattern" ? `Picked for you, from a past prompt: \u201c${clip(flat(p.from), 80)}\u201d`
+      : "Picked for you";
+    const preview = p.title && p.content ? " \u00b7 " + clip(flat(p.content), 120) : "";
     const off = p.key && cardDropPending.has(p.key);
     // What was picked for you can be left out; what you added is yours.
     const drop = p.key && !cardStale
       ? `<button type="button" class="pm-card-used-drop${off ? " pm-card-used-undrop" : ""}" data-pm-drop="${escHtml(p.key)}" ` +
         `aria-pressed="${!off}" title="${off ? "Use it again" : "Leave it out of the next retry"}">${off ? "Use" : "Don\u2019t use"}</button>`
       : "";
-    return `<li class="pm-card-used-item pm-card-used-${p.kind}${off ? " pm-card-used-off" : ""}">` +
+    // One line each: the name, and Don't use. Why it is there, and the rest
+    // of the prompt, are in the row's tooltip; three two-line rows with a
+    // heading pushed the rewrite itself down to two lines.
+    return `<li class="pm-card-used-item pm-card-used-${p.kind}${off ? " pm-card-used-off" : ""}" title="${escAttr(why + preview)}">` +
       `<span class="pm-card-used-icon" aria-hidden="true">${p.kind === "attached" ? LIB_ICON.clip : CARD_SPARK_SVG}</span>` +
-      `<span class="pm-card-used-text"><span class="pm-card-used-name">${escHtml(clip(name(p), 60))}</span>` +
-      `<span class="pm-card-used-why">${why}${preview}</span></span>${drop}</li>`;
+      `<span class="pm-card-used-name">${escHtml(clip(name(p), 120))}</span>${drop}</li>`;
   }).join("");
   const leftOut = left.length
     ? `<li class="pm-card-used-left">Left out: ${left.map((x) => escHtml(clip(flat(x.title) || "a saved prompt", 40))).join(", ")}</li>`
@@ -5344,7 +5349,7 @@ function cardUsedParts(result) {
       `aria-controls="pm-card-used-list" title="${all}" aria-label="${all}"><span class="pm-card-used-arrow" aria-hidden="true">\u21B3</span>` +
       `<span class="pm-card-ctx-name">${summary}</span>${n ? `<span class="pm-card-ctx-pending">\u2212${n}</span>` : ""}<span class="pm-card-used-caret" aria-hidden="true">\u25BE</span></button>`,
     list: `<ul class="pm-card-used-list" id="pm-card-used-list" aria-label="Context for this rewrite"${cardUsedOpen ? "" : " hidden"}>` +
-      `<li class="pm-card-used-head">Context for this rewrite</li>${rows}${leftOut}${retry}</ul>`,
+      `${rows}${leftOut}${retry}</ul>`,
   };
 }
 
@@ -7143,6 +7148,11 @@ function escHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+/** For text inside an attribute's quotes: escHtml leaves " as it is. */
+function escAttr(str) {
+  return escHtml(str).replace(/"/g, "&quot;");
 }
 
 function setStatus(id, msg, type) {

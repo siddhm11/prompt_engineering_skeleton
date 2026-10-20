@@ -428,17 +428,20 @@ def main():
         wait_title("Rewrite · Deep")
         chip = page.inner_text("#pm-card-used-toggle").replace("\n", " ")
         summary = page.get_attribute("#pm-card-used-toggle", "title")
-        check("Code review template" in chip and "+1" in chip and page.locator("#pm-card .pm-card-head #pm-card-used-toggle").count() == 1,
-              f"the title bar names the first saved prompt used, and how many more, got {chip!r}")
+        check("Context · 2" in chip and "Code review template" not in chip and page.locator("#pm-card .pm-card-head #pm-card-used-toggle").count() == 1,
+              f"the title bar says how much context was used, not a name that fills it, got {chip!r}")
         check("Code review template" in summary and "Bug report triage" in summary,
               f"and its tooltip names them all, got {summary!r}")
         check(page.is_hidden("#pm-card-used-list"), "the list starts folded")
         page.click("#pm-card-used-toggle")
-        items = [t.replace("\n", " ") for t in page.locator("#pm-card-used-list .pm-card-used-item").all_inner_texts()]
-        check(len(items) == 2 and "picked for you" in items[0] and "picked for you" in items[1],
-              f"each one says plainly why it is there, with no matcher scores, got {items}")
-        check(not any("match" in i for i in items) and page.inner_text("#pm-card-used-list .pm-card-used-head").strip().lower() == "context for this rewrite",
-              "and the list is headed as the rewrite's context")
+        rows = page.locator("#pm-card-used-list .pm-card-used-item")
+        items = [t.replace("\n", " ") for t in rows.all_inner_texts()]
+        tips = [rows.nth(i).get_attribute("title") for i in range(rows.count())]
+        check(len(items) == 2 and all(rows.nth(i).bounding_box()["height"] <= 32 for i in range(2)),
+              f"one line per item, got {items}")
+        check(all(t.startswith("Picked for you") for t in tips) and not any("match" in t.lower() for t in tips),
+              f"why each is there is in its tooltip, in plain words, with no matcher scores, got {tips}")
+        check(page.locator("#pm-card-used-list .pm-card-used-head").count() == 0, "and there is no heading row: the chip is its heading")
         n = len(server["stream"])
         page.click("#pm-card-used-list [data-pm-drop='s2']")
         page.wait_for_timeout(600)
